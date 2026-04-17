@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: jotter
+Version: 0.1.0
+Summary: A GNOME notes app that syncs with Gmail/Apple Notes via IMAP
+Requires-Python: >=3.10
+Requires-Dist: imapclient
+Requires-Dist: google-auth
+Requires-Dist: google-auth-oauthlib
+Requires-Dist: secretstorage
+Requires-Dist: jeepney

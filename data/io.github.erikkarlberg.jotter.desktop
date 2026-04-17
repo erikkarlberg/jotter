@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Jotter
+GenericName=Notes
+Comment=Notes app that syncs with Gmail and Apple Notes
+Exec=jotter %u
+Icon=io.github.erikkarlberg.jotter
+Terminal=false
+Type=Application
+Categories=Office;TextEditor;GTK;GNOME;
+Keywords=notes;memo;gmail;apple;
+StartupWMClass=jotter
+X-GNOME-UsesNotifications=true

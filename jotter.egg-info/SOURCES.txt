@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+jotter/__init__.py
+jotter/auth.py
+jotter/editor.py
+jotter/imap_backend.py
+jotter/main.py
+jotter/models.py
+jotter/utils.py
+jotter/window.py
+jotter.egg-info/PKG-INFO
+jotter.egg-info/SOURCES.txt
+jotter.egg-info/dependency_links.txt
+jotter.egg-info/entry_points.txt
+jotter.egg-info/requires.txt
+jotter.egg-info/top_level.txt

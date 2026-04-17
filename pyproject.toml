@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jotter"
+version = "0.1.0"
+description = "A GNOME notes app that syncs with Gmail/Apple Notes via IMAP"
+requires-python = ">=3.10"
+dependencies = [
+    "imapclient",
+    "google-auth",
+    "google-auth-oauthlib",
+    "secretstorage",
+    "jeepney",
+]
+
+[project.scripts]
+jotter = "jotter.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jotter*"]
+
+[tool.setuptools.package-data]
+jotter = ["*.py"]

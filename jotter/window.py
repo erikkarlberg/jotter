@@ -1,0 +1,834 @@
+"""Main application window — three-column layout."""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Callable, Optional
+
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, GLib, GObject, Gtk
+
+from .models import Database, Folder, Note
+from .editor import EditorWidget
+from .imap_backend import ImapSyncEngine, SyncEvent, SyncEventType
+
+logger = logging.getLogger(__name__)
+
+_DB_PATH_DEFAULT = GLib.get_user_data_dir() + "/jotter/cache.db"
+
+
+class AllNotesRow(Gtk.ListBoxRow):
+    """Top pseudo-folder row that shows notes from every folder."""
+
+    def __init__(self):
+        super().__init__()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        icon = Gtk.Image.new_from_icon_name("view-list-symbolic")
+        icon.set_pixel_size(16)
+
+        label = Gtk.Label(label="All Notes")
+        label.set_halign(Gtk.Align.START)
+        label.set_hexpand(True)
+
+        box.append(icon)
+        box.append(label)
+        self.set_child(box)
+
+
+class FolderRow(Gtk.ListBoxRow):
+    """Sidebar row for a single folder."""
+
+    def __init__(self, folder: Folder, on_note_dropped: Optional[Callable] = None):
+        super().__init__()
+        self.folder = folder
+        self._on_note_dropped_cb = on_note_dropped
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        icon.set_pixel_size(16)
+
+        label = Gtk.Label(label=folder.name)
+        label.set_halign(Gtk.Align.START)
+        label.set_hexpand(True)
+        label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+
+        box.append(icon)
+        box.append(label)
+        self.set_child(box)
+
+        if on_note_dropped:
+            self._setup_drop_target()
+
+    def _setup_drop_target(self) -> None:
+        target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
+        target.connect("drop", self._on_drop)
+        target.connect("enter", self._on_drag_enter)
+        target.connect("leave", self._on_drag_leave)
+        self.add_controller(target)
+
+    def _on_drag_enter(self, target, x, y) -> Gdk.DragAction:
+        self.add_css_class("drop-highlight")
+        return Gdk.DragAction.MOVE
+
+    def _on_drag_leave(self, target) -> None:
+        self.remove_css_class("drop-highlight")
+
+    def _on_drop(self, target, value, x, y) -> bool:
+        self.remove_css_class("drop-highlight")
+        try:
+            note_id = int(value)
+        except (ValueError, TypeError):
+            return False
+        if self._on_note_dropped_cb:
+            self._on_note_dropped_cb(note_id, self.folder)
+        return True
+
+
+class NoteRow(Gtk.ListBoxRow):
+    """A single row in the note list."""
+
+    def __init__(self, note: Note, folder_name: str = ""):
+        super().__init__()
+        self.note = note
+        self._folder_name = folder_name
+        self._build()
+        self._setup_drag()
+
+    def _build(self) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+
+        subject = self.note.subject or "(no title)"
+        title = Gtk.Label(label=subject)
+        title.set_halign(Gtk.Align.START)
+        title.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
+        title.add_css_class("heading")
+
+        preview_text = self.note.preview or ""
+        preview = Gtk.Label(label=preview_text)
+        preview.set_halign(Gtk.Align.START)
+        preview.set_ellipsize(3)
+        preview.add_css_class("caption")
+        preview.add_css_class("dim-label")
+
+        box.append(title)
+        box.append(preview)
+
+        if self._folder_name:
+            tag_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            tag_box.set_margin_top(2)
+            icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+            icon.set_pixel_size(12)
+            icon.add_css_class("dim-label")
+            tag_label = Gtk.Label(label=self._folder_name)
+            tag_label.add_css_class("caption")
+            tag_label.add_css_class("dim-label")
+            tag_box.append(icon)
+            tag_box.append(tag_label)
+            box.append(tag_box)
+
+        self.set_child(box)
+
+    def _setup_drag(self) -> None:
+        source = Gtk.DragSource.new()
+        source.set_actions(Gdk.DragAction.MOVE)
+        source.connect("prepare", self._on_drag_prepare)
+        self.add_controller(source)
+
+    def _on_drag_prepare(self, src, x, y) -> Gdk.ContentProvider:
+        val = GObject.Value()
+        val.init(GObject.TYPE_STRING)
+        val.set_string(str(self.note.id))
+        return Gdk.ContentProvider.new_for_value(val)
+
+
+class MainWindow(Adw.ApplicationWindow):
+    """AdwApplicationWindow hosting the three-column layout."""
+
+    def __init__(
+        self,
+        app: Adw.Application,
+        db: Database,
+        sync_engine: Optional[ImapSyncEngine] = None,
+        auth_source: str = "none",
+    ):
+        super().__init__(application=app)
+        self._db = db
+        self._sync_engine = sync_engine
+        self._auth_source = auth_source
+        self._current_folder: Optional[Folder] = None
+        self._current_note: Optional[Note] = None
+        self._all_notes_mode: bool = False
+        self._last_action: str = "init"
+
+        # Delete button two-click confirmation state
+        self._delete_confirm_pending: bool = False
+        self._delete_confirm_timeout_id: Optional[int] = None
+
+        # Save icon auto-hide timeout
+        self._save_icon_timeout_id: Optional[int] = None
+
+        self.set_title("Jotter")
+        self.set_default_size(1100, 700)
+
+        self._build_ui()
+        self._load_folders()
+        self._restore_window_state()
+
+        if sync_engine:
+            sync_engine._event_cb = self._on_sync_event
+
+    # ------------------------------------------------------------------
+    # UI Construction
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        # CSS for drag-and-drop folder highlight
+        css = Gtk.CssProvider()
+        css.load_from_string("""
+.drop-highlight {
+    background-color: alpha(@accent_color, 0.15);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 2px alpha(@accent_color, 0.8);
+}
+""")
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(),
+            css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        # Toast overlay (wraps everything for notifications)
+        self._toast_overlay = Adw.ToastOverlay()
+        self.set_content(self._toast_overlay)
+
+        # Outer split: folders | right pane
+        self._outer_split = Adw.OverlaySplitView()
+        self._outer_split.set_min_sidebar_width(180)
+        self._outer_split.set_max_sidebar_width(260)
+        self._outer_split.set_sidebar_width_fraction(0.22)
+        self._toast_overlay.set_child(self._outer_split)
+
+        # ---- LEFT: folder list ----
+        self._folder_list = Gtk.ListBox()
+        self._folder_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._folder_list.add_css_class("navigation-sidebar")
+        self._folder_selected_id = self._folder_list.connect("row-selected", self._on_folder_selected)
+
+        folder_scroll = Gtk.ScrolledWindow()
+        folder_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        folder_scroll.set_vexpand(True)
+        folder_scroll.set_child(self._folder_list)
+
+        left_toolbar = Adw.ToolbarView()
+        left_header = Adw.HeaderBar()
+        # Title only — no subtitle
+        left_header.set_title_widget(Adw.WindowTitle(title="Jotter", subtitle=""))
+
+        new_folder_btn = Gtk.Button.new_from_icon_name("folder-new-symbolic")
+        new_folder_btn.set_tooltip_text("New folder")
+        new_folder_btn.connect("clicked", self._on_new_folder)
+        left_header.pack_end(new_folder_btn)
+
+        if self._auth_source == "none":
+            add_account_btn = Gtk.Button.new_from_icon_name("user-available-symbolic")
+            add_account_btn.set_tooltip_text("Add Google Account in GNOME Settings")
+            add_account_btn.connect("clicked", lambda _: self._open_online_accounts_settings())
+            left_header.pack_start(add_account_btn)
+
+        left_toolbar.add_top_bar(left_header)
+        left_toolbar.set_content(folder_scroll)
+        self._outer_split.set_sidebar(left_toolbar)
+
+        # ---- RIGHT: inner split view (note list + editor) ----
+        self._inner_split = Adw.OverlaySplitView()
+        self._inner_split.set_sidebar_position(Gtk.PackType.START)
+        self._inner_split.set_max_sidebar_width(320)
+        self._inner_split.set_sidebar_width_fraction(0.33)
+
+        # --- MIDDLE: note list ---
+        self._note_list = Gtk.ListBox()
+        self._note_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._note_list.add_css_class("boxed-list-separate")
+        self._note_list.set_margin_start(8)
+        self._note_list.set_margin_end(8)
+        self._note_list.set_margin_top(8)
+        self._note_list.set_margin_bottom(8)
+        self._note_selected_id = self._note_list.connect("row-selected", self._on_note_selected)
+
+        note_scroll = Gtk.ScrolledWindow()
+        note_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        note_scroll.set_vexpand(True)
+        note_scroll.set_child(self._note_list)
+
+        mid_toolbar = Adw.ToolbarView()
+        self._mid_header = Adw.HeaderBar()
+        self._folder_title = Adw.WindowTitle(title="Notes", subtitle="")
+        self._mid_header.set_title_widget(self._folder_title)
+
+        self._sidebar_btn = Gtk.ToggleButton()
+        self._sidebar_btn.set_icon_name("sidebar-show-symbolic")
+        self._sidebar_btn.set_tooltip_text("Show folders")
+        self._sidebar_btn.set_visible(False)
+        self._outer_split.bind_property(
+            "show-sidebar", self._sidebar_btn, "active",
+            GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE,
+        )
+        self._mid_header.pack_start(self._sidebar_btn)
+
+        new_note_btn = Gtk.Button.new_from_icon_name("document-new-symbolic")
+        new_note_btn.set_tooltip_text("New note (Ctrl+N)")
+        new_note_btn.connect("clicked", self._on_new_note)
+        self._mid_header.pack_end(new_note_btn)
+
+        search_btn = Gtk.ToggleButton()
+        search_btn.set_icon_name("system-search-symbolic")
+        search_btn.set_tooltip_text("Search (Ctrl+F)")
+        self._mid_header.pack_end(search_btn)
+
+        mid_toolbar.add_top_bar(self._mid_header)
+
+        self._search_bar = Gtk.SearchBar()
+        self._search_entry = Gtk.SearchEntry()
+        self._search_entry.set_hexpand(True)
+        self._search_entry.connect("search-changed", self._on_search_changed)
+        self._search_bar.set_child(self._search_entry)
+        self._search_bar.connect_entry(self._search_entry)
+        search_btn.bind_property(
+            "active", self._search_bar, "search-mode-enabled",
+            GObject.BindingFlags.BIDIRECTIONAL,
+        )
+
+        mid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        mid_content.append(self._search_bar)
+        mid_content.append(note_scroll)
+
+        mid_toolbar.set_content(mid_content)
+        self._inner_split.set_sidebar(mid_toolbar)
+
+        # --- EDITOR ---
+        self._editor = EditorWidget()
+        self._editor.connect("note-changed", self._on_note_changed)
+        self._editor.set_editable(False)
+        self._editor.set_vexpand(True)
+
+        edit_toolbar = Adw.ToolbarView()
+        self._edit_header = Adw.HeaderBar()
+
+        # Save icon (clock) — hidden until a local save occurs
+        self._save_icon = Gtk.Image.new_from_icon_name("clock-symbolic")
+        self._save_icon.set_pixel_size(16)
+        self._save_icon.add_css_class("dim-label")
+        self._save_icon.set_visible(False)
+        self._edit_header.set_title_widget(self._save_icon)
+
+        # Delete button — trash icon with a sliding "?" confirm widget
+        # Layout (packed as one box into header end): [?] [trash]
+        delete_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+
+        self._delete_confirm_revealer = Gtk.Revealer()
+        self._delete_confirm_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_LEFT
+        )
+        self._delete_confirm_revealer.set_transition_duration(150)
+        self._delete_confirm_revealer.set_reveal_child(False)
+
+        confirm_label = Gtk.Label(label="Delete?")
+        confirm_label.set_margin_end(6)
+        confirm_label.add_css_class("caption")
+        self._delete_confirm_revealer.set_child(confirm_label)
+
+        self._delete_btn = Gtk.Button()
+        self._delete_btn.set_icon_name("user-trash-symbolic")
+        self._delete_btn.set_tooltip_text("Delete note")
+        self._delete_btn.set_sensitive(False)
+        self._delete_btn.connect("clicked", self._on_delete_btn_clicked)
+
+        delete_box.append(self._delete_confirm_revealer)
+        delete_box.append(self._delete_btn)
+        self._edit_header.pack_end(delete_box)
+
+        # ⋮ menu (Sync Now)
+        menu_model = self._build_note_menu()
+        menu_btn = Gtk.MenuButton()
+        menu_btn.set_icon_name("view-more-symbolic")
+        menu_btn.set_menu_model(menu_model)
+        self._edit_header.pack_end(menu_btn)
+
+        edit_toolbar.add_top_bar(self._edit_header)
+        edit_toolbar.set_content(self._editor)
+
+        self._inner_split.set_content(edit_toolbar)
+        self._outer_split.set_content(self._inner_split)
+
+        # ---- Breakpoint: collapse folder sidebar at 860sp ----
+        bp = Adw.Breakpoint.new(
+            Adw.BreakpointCondition.parse("max-width: 860sp")
+        )
+        bp.add_setter(self._outer_split, "collapsed", True)
+        bp.add_setter(self._outer_split, "show-sidebar", False)
+        bp.add_setter(self._sidebar_btn, "visible", True)
+        self.add_breakpoint(bp)
+
+        # ---- Keyboard shortcuts ----
+        ctrl = Gtk.ShortcutController()
+        ctrl.set_scope(Gtk.ShortcutScope.MANAGED)
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>n"),
+            Gtk.CallbackAction.new(lambda *_: self._on_new_note(None) or True),
+        ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>f"),
+            Gtk.CallbackAction.new(lambda *_: self._toggle_search() or True),
+        ))
+        self.add_controller(ctrl)
+
+    def _build_note_menu(self):
+        from gi.repository import Gio
+        menu = Gio.Menu()
+        menu.append("Sync Now", "win.sync-now")
+
+        sync_action = Gio.SimpleAction.new("sync-now", None)
+        sync_action.connect("activate", self._on_sync_now)
+        self.add_action(sync_action)
+
+        return menu
+
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
+
+    def _load_folders(self) -> None:
+        current_folder_id = self._current_folder.id if self._current_folder else None
+
+        self._last_action = "load_folders:block"
+        self._folder_list.handler_block(self._folder_selected_id)
+
+        while row := self._folder_list.get_first_child():
+            self._folder_list.remove(row)
+
+        all_notes_row = AllNotesRow()
+        self._folder_list.append(all_notes_row)
+
+        folders = self._db.get_folders()
+        if not folders:
+            folder = self._db.ensure_folder("Notes", "Notes")
+            folders = [folder]
+
+        target_folder_row = None
+        for folder in folders:
+            row = FolderRow(folder, on_note_dropped=self._move_note_to_folder)
+            self._folder_list.append(row)
+            if folder.id == current_folder_id:
+                target_folder_row = row
+                self._current_folder = folder
+
+        let_signal_fire = (target_folder_row is None and not self._all_notes_mode)
+        row_to_select = target_folder_row or all_notes_row
+        logger.debug("load_folders: current_folder_id=%s let_signal_fire=%s all_notes=%s",
+                     current_folder_id, let_signal_fire, self._all_notes_mode)
+
+        if let_signal_fire:
+            self._last_action = "load_folders:unblock+select(intentional)"
+            self._folder_list.handler_unblock(self._folder_selected_id)
+            self._folder_list.select_row(row_to_select)
+        else:
+            self._last_action = "load_folders:select+unblock(suppressed)"
+            self._folder_list.select_row(row_to_select)
+            self._folder_list.handler_unblock(self._folder_selected_id)
+        self._last_action = "load_folders:done"
+
+    def _load_notes(self, folder: Folder, search: str = "") -> None:
+        logger.debug("_load_notes: folder=%s search=%r", folder.name, search)
+        while row := self._note_list.get_first_child():
+            self._note_list.remove(row)
+        for note in self._db.get_notes(folder.id, search):
+            self._note_list.append(NoteRow(note))
+        self._editor.clear()
+        self._current_note = None
+
+    def _load_notes_all(self, search: str = "") -> None:
+        logger.debug("_load_notes_all: search=%r", search)
+        while row := self._note_list.get_first_child():
+            self._note_list.remove(row)
+        folder_names = {f.id: f.name for f in self._db.get_folders()}
+        for note in self._db.get_all_notes(search):
+            self._note_list.append(NoteRow(note, folder_name=folder_names.get(note.folder_id, "")))
+        self._editor.clear()
+        self._current_note = None
+
+    def _sync_note_list(self) -> None:
+        """Update note list after sync, adding/removing rows without a full rebuild."""
+        if self._all_notes_mode:
+            new_notes = self._db.get_all_notes()
+        elif self._current_folder is not None:
+            new_notes = self._db.get_notes(self._current_folder.id)
+        else:
+            return
+
+        new_ids = {n.id for n in new_notes}
+
+        existing: dict[int, NoteRow] = {}
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow):
+                existing[child.note.id] = child
+            child = child.get_next_sibling()
+
+        if new_ids == set(existing.keys()):
+            return
+
+        to_remove = set(existing.keys()) - new_ids
+        to_add = new_ids - set(existing.keys())
+        logger.debug("_sync_note_list: remove=%s add=%s", to_remove, to_add)
+
+        self._last_action = "sync_note_list:block"
+        self._note_list.handler_block(self._note_selected_id)
+
+        self._last_action = "sync_note_list:removing"
+        for nid in to_remove:
+            self._note_list.remove(existing[nid])
+
+        if self._all_notes_mode:
+            folder_names = {f.id: f.name for f in self._db.get_folders()}
+        self._last_action = "sync_note_list:prepending"
+        for note in reversed(new_notes):
+            if note.id not in existing:
+                fn = folder_names.get(note.folder_id, "") if self._all_notes_mode else ""
+                self._note_list.prepend(NoteRow(note, folder_name=fn))
+
+        self._last_action = "sync_note_list:unblock"
+        self._note_list.handler_unblock(self._note_selected_id)
+        self._last_action = "sync_note_list:done"
+
+        if self._current_note and self._current_note.id not in new_ids:
+            logger.debug("_sync_note_list: current note %s deleted remotely → clearing",
+                         self._current_note.id)
+            self._editor.clear()
+            self._current_note = None
+
+    # ------------------------------------------------------------------
+    # Signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_folder_selected(self, list_box, row) -> None:
+        logger.debug("_on_folder_selected: row=%s last_action=%s", type(row).__name__, self._last_action)
+        if isinstance(row, AllNotesRow):
+            if self._all_notes_mode:
+                return
+            self._all_notes_mode = True
+            self._current_folder = None
+            self._folder_title.set_title("All Notes")
+            self._load_notes_all()
+        elif isinstance(row, FolderRow):
+            if not self._all_notes_mode and self._current_folder and self._current_folder.id == row.folder.id:
+                return
+            self._all_notes_mode = False
+            self._current_folder = row.folder
+            self._folder_title.set_title(row.folder.name)
+            self._load_notes(row.folder)
+        else:
+            return
+        if self._outer_split.get_collapsed():
+            self._outer_split.set_show_sidebar(False)
+
+    def _on_note_selected(self, list_box, row) -> None:
+        if row is None or not isinstance(row, NoteRow):
+            return
+        if self._current_note is not None and self._current_note.id == row.note.id:
+            return
+        # Reset delete confirmation when switching notes
+        self._reset_delete_btn()
+        self._current_note = row.note
+        self._editor.load_note(row.note)
+        self._editor.set_editable(True)
+        self._delete_btn.set_sensitive(True)
+        if self._outer_split.get_collapsed():
+            self._outer_split.set_show_sidebar(False)
+
+    def _on_note_changed(self, _widget, note: Note) -> None:
+        """Called after autosave debounce — persist and optionally push."""
+        self._db.save_note(note)
+        self._show_save_icon()
+        self._refresh_note_row(note)
+        if self._sync_engine:
+            from .imap_backend import CmdType, _Cmd
+            self._sync_engine.cmd_queue.put(_Cmd(CmdType.NOTE_SAVED, data=note.id))
+
+    def _refresh_note_row(self, note: Note) -> None:
+        row = self._note_list.get_first_child()
+        while row:
+            if isinstance(row, NoteRow) and row.note.id == note.id:
+                row.note = note
+                self._last_action = "refresh_note_row:before_build"
+                self._note_list.handler_block(self._note_selected_id)
+                row._build()
+                self._note_list.handler_unblock(self._note_selected_id)
+                self._last_action = "refresh_note_row:done"
+                break
+            row = row.get_next_sibling()
+
+    def _on_new_note(self, _btn) -> None:
+        if self._all_notes_mode:
+            folders = self._db.get_folders()
+            folder = folders[0] if folders else self._db.ensure_folder("Notes", "Notes")
+        elif self._current_folder is not None:
+            folder = self._current_folder
+        else:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        note = Note(folder_id=folder.id, created_at=now, modified_at=now)
+        self._db.save_note(note)
+        new_row = NoteRow(note)
+        self._note_list.prepend(new_row)
+        self._note_list.select_row(new_row)
+
+    def _on_new_folder(self, _btn) -> None:
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="New Folder",
+            body="Enter a name for the new folder:",
+        )
+        entry = Gtk.Entry()
+        entry.set_placeholder_text("Folder name")
+        dialog.set_extra_child(entry)
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("create", "Create")
+        dialog.set_response_appearance("create", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", self._on_new_folder_response, entry)
+        dialog.present()
+
+    def _on_new_folder_response(self, dialog, response_id: str, entry: Gtk.Entry) -> None:
+        if response_id == "create":
+            name = entry.get_text().strip()
+            if name:
+                self._db.ensure_folder(name, name)
+                self._load_folders()
+
+    # ------------------------------------------------------------------
+    # Delete button — two-click confirm
+    # ------------------------------------------------------------------
+
+    def _on_delete_btn_clicked(self, btn) -> None:
+        if self._current_note is None:
+            return
+        if not self._delete_confirm_pending:
+            # First click: slide out the "Delete?" label and turn the button red
+            self._delete_confirm_pending = True
+            self._delete_btn.add_css_class("destructive-action")
+            self._delete_btn.set_tooltip_text("Click again to confirm")
+            self._delete_confirm_revealer.set_reveal_child(True)
+            # Auto-disarm after 3 seconds
+            self._delete_confirm_timeout_id = GLib.timeout_add(3000, self._reset_delete_btn)
+        else:
+            # Second click: confirm and delete
+            self._reset_delete_btn()
+            self._do_delete_note()
+
+    def _reset_delete_btn(self) -> bool:
+        self._delete_confirm_pending = False
+        if self._delete_confirm_timeout_id is not None:
+            GLib.source_remove(self._delete_confirm_timeout_id)
+            self._delete_confirm_timeout_id = None
+        self._delete_btn.remove_css_class("destructive-action")
+        self._delete_btn.set_tooltip_text("Delete note")
+        self._delete_confirm_revealer.set_reveal_child(False)
+        return GLib.SOURCE_REMOVE
+
+    def _do_delete_note(self) -> None:
+        if self._current_note is None:
+            return
+        note_id = self._current_note.id
+        self._db.delete_note(note_id)
+        # Remove row without a full reload
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note_id:
+                self._note_list.remove(child)
+                break
+            child = child.get_next_sibling()
+        self._current_note = None
+        self._editor.clear()
+        self._editor.set_editable(False)
+        self._delete_btn.set_sensitive(False)
+        if self._sync_engine:
+            from .imap_backend import CmdType, _Cmd
+            self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
+
+    # ------------------------------------------------------------------
+    # Save icon
+    # ------------------------------------------------------------------
+
+    def _show_save_icon(self) -> None:
+        self._save_icon.set_visible(True)
+        if self._save_icon_timeout_id is not None:
+            GLib.source_remove(self._save_icon_timeout_id)
+        self._save_icon_timeout_id = GLib.timeout_add(1500, self._hide_save_icon)
+
+    def _hide_save_icon(self) -> bool:
+        self._save_icon.set_visible(False)
+        self._save_icon_timeout_id = None
+        return GLib.SOURCE_REMOVE
+
+    # ------------------------------------------------------------------
+    # Drag-and-drop: move note to folder
+    # ------------------------------------------------------------------
+
+    def _move_note_to_folder(self, note_id: int, target_folder: Folder) -> None:
+        note = self._db.get_note(note_id)
+        if note is None or note.folder_id == target_folder.id:
+            return
+
+        # Reset sync state so the note is re-pushed to the new IMAP folder.
+        # Setting imap_uid=None prevents _push from trying to delete the old
+        # message from the wrong folder; the old message is deduplicated by
+        # apple_uuid if it reappears on the next pull.
+        note.folder_id = target_folder.id
+        note.imap_uid = None
+        note.imap_message_id = None
+        note.synced_at = None
+        note.modified_at = datetime.now(timezone.utc).isoformat()
+        self._db.save_note(note)
+
+        if self._all_notes_mode:
+            # Update the folder tag on the row in place
+            folder_names = {f.id: f.name for f in self._db.get_folders()}
+            child = self._note_list.get_first_child()
+            while child:
+                if isinstance(child, NoteRow) and child.note.id == note_id:
+                    child.note = note
+                    child._folder_name = folder_names.get(target_folder.id, "")
+                    self._note_list.handler_block(self._note_selected_id)
+                    child._build()
+                    self._note_list.handler_unblock(self._note_selected_id)
+                    break
+                child = child.get_next_sibling()
+        else:
+            # Specific folder view: remove the note from the current list
+            child = self._note_list.get_first_child()
+            while child:
+                if isinstance(child, NoteRow) and child.note.id == note_id:
+                    self._note_list.remove(child)
+                    if self._current_note and self._current_note.id == note_id:
+                        self._current_note = None
+                        self._editor.clear()
+                        self._editor.set_editable(False)
+                        self._delete_btn.set_sensitive(False)
+                    break
+                child = child.get_next_sibling()
+
+        self._show_toast(f"Moved to \u201c{target_folder.name}\u201d")
+
+        if self._sync_engine:
+            from .imap_backend import CmdType, _Cmd
+            self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
+
+    # ------------------------------------------------------------------
+    # Other handlers
+    # ------------------------------------------------------------------
+
+    def _on_sync_now(self, _action, _param) -> None:
+        if self._sync_engine:
+            self._sync_engine.request_sync()
+            self._show_toast("Syncing…")
+
+    def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
+        query = entry.get_text().strip()
+        if self._all_notes_mode:
+            self._load_notes_all(query)
+        elif self._current_folder is not None:
+            self._load_notes(self._current_folder, query)
+
+    def _toggle_search(self) -> None:
+        bar = self._search_bar
+        bar.set_search_mode_enabled(not bar.get_search_mode_enabled())
+
+    # ------------------------------------------------------------------
+    # Sync events
+    # ------------------------------------------------------------------
+
+    def _on_sync_event(self, event: SyncEvent) -> None:
+        if event.type == SyncEventType.NOTES_UPDATED:
+            logger.debug("sync event NOTES_UPDATED folder=%s", event.data)
+            if self._all_notes_mode or (self._current_folder and event.data == self._current_folder.id):
+                self._sync_note_list()
+
+        elif event.type == SyncEventType.SYNC_COMPLETE:
+            logger.debug("sync event SYNC_COMPLETE")
+            self._load_folders()
+
+        elif event.type == SyncEventType.SYNC_ERROR:
+            self._show_toast(f"Sync error: {event.error}")
+
+        elif event.type == SyncEventType.AUTH_REQUIRED:
+            self._show_add_account_dialog()
+
+        return GLib.SOURCE_REMOVE
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _open_online_accounts_settings(self) -> None:
+        try:
+            from gi.repository import Gio
+            Gio.AppInfo.launch_default_for_uri("settings://online-accounts", None)
+        except Exception:
+            import subprocess
+            subprocess.Popen(["gnome-control-center", "online-accounts"])
+
+    def _show_add_account_dialog(self) -> None:
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Google Account Needed",
+            body=(
+                "To sync notes with Gmail and Apple Notes, add your Google Account "
+                "in GNOME Settings → Online Accounts."
+            ),
+        )
+        dialog.add_response("cancel", "Not Now")
+        dialog.add_response("open", "Open Settings")
+        dialog.set_response_appearance("open", Adw.ResponseAppearance.SUGGESTED)
+        dialog.connect("response", lambda d, r: self._open_online_accounts_settings() if r == "open" else None)
+        dialog.present()
+
+    def _show_toast(self, message: str) -> None:
+        toast = Adw.Toast(title=message)
+        toast.set_timeout(3)
+        self._toast_overlay.add_toast(toast)
+
+    def _restore_window_state(self) -> None:
+        w = self._db.get_meta("window_width")
+        h = self._db.get_meta("window_height")
+        if w and h:
+            try:
+                self.set_default_size(int(w), int(h))
+            except ValueError:
+                pass
+
+    def _save_window_state(self) -> None:
+        alloc = self.get_default_size()
+        self._db.set_meta("window_width", str(alloc[0]))
+        self._db.set_meta("window_height", str(alloc[1]))
+
+    def do_close_request(self) -> bool:
+        self._save_window_state()
+        if self._sync_engine:
+            self._sync_engine.stop()
+        return False  # allow close
