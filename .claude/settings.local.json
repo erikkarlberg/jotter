@@ -28,7 +28,16 @@
       "Bash(kill:*)",
       "Bash(python -c:*)",
       "Bash(grep:*)",
-      "Bash(pip uninstall:*)"
+      "Bash(pip uninstall:*)",
+      "Bash(chmod +x *)",
+      "Bash(bash *)",
+      "Bash(dpkg-deb --info build/jotter_0.1.0.deb)",
+      "Bash(dpkg-deb --contents build/jotter_0.1.0.deb)",
+      "Bash(convert -background none -resize 64x64 data/icons/io.github.erikkarlberg.jotter.svg /tmp/test_icon.png)",
+      "Bash(identify /tmp/test_icon.png)",
+      "Bash(appstreamcli validate *)",
+      "Bash(appstreamcli --version)",
+      "Bash(gnome-software --version)"
     ]
   }
 }

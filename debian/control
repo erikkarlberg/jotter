@@ -1,0 +1,18 @@
+Package: jotter
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.10),
+         python3-gi,
+         gir1.2-gtk-4.0,
+         gir1.2-adw-1,
+         python3-imapclient,
+         python3-google-auth,
+         python3-google-auth-oauthlib,
+         python3-secretstorage,
+         python3-jeepney
+Maintainer: Erik Karlberg <erik@karlberg.org>
+Description: GNOME notes app that syncs with Gmail and Apple Notes
+ Jotter is a GNOME notes application that synchronises notes
+ with Gmail (via IMAP) and Apple Notes.

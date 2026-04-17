@@ -1,0 +1,13 @@
+# Build output
+build/
+*.deb
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Secrets
+client_secrets.json
