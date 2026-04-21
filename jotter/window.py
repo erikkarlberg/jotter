@@ -277,6 +277,19 @@ class MainWindow(Adw.ApplicationWindow):
         note_scroll.set_vexpand(True)
         note_scroll.set_child(self._note_list)
 
+        self._empty_state = Adw.StatusPage()
+        self._empty_state.set_icon_name("accessories-text-editor-symbolic")
+        self._empty_state.set_title("No Notes")
+        self._empty_state.add_css_class("compact")
+        self._empty_state.set_vexpand(True)
+
+        self._note_stack = Gtk.Stack()
+        self._note_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._note_stack.set_transition_duration(150)
+        self._note_stack.set_vexpand(True)
+        self._note_stack.add_named(note_scroll, "list")
+        self._note_stack.add_named(self._empty_state, "empty")
+
         mid_toolbar = Adw.ToolbarView()
         self._mid_header = Adw.HeaderBar()
         self._folder_title = Adw.WindowTitle(title="Notes", subtitle="")
@@ -317,7 +330,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         mid_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         mid_content.append(self._search_bar)
-        mid_content.append(note_scroll)
+        mid_content.append(self._note_stack)
 
         mid_toolbar.set_content(mid_content)
         self._inner_split.set_sidebar(mid_toolbar)
@@ -327,6 +340,27 @@ class MainWindow(Adw.ApplicationWindow):
         self._editor.connect("note-changed", self._on_note_changed)
         self._editor.set_editable(False)
         self._editor.set_vexpand(True)
+
+        # Empty state shown when no note is selected
+        self._editor_empty = Adw.StatusPage()
+        self._editor_empty.set_icon_name("document-new-symbolic")
+        self._editor_empty.set_title("Create your first note")
+        self._editor_empty.set_description("Write something you want to remember")
+        _create_btn = Gtk.Button(label="New Note")
+        _create_btn.set_halign(Gtk.Align.CENTER)
+        _create_btn.add_css_class("pill")
+        _create_btn.add_css_class("suggested-action")
+        _create_btn.connect("clicked", self._on_new_note)
+        self._editor_empty.set_child(_create_btn)
+        self._editor_empty.set_vexpand(True)
+
+        self._editor_stack = Gtk.Stack()
+        self._editor_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self._editor_stack.set_transition_duration(150)
+        self._editor_stack.set_vexpand(True)
+        self._editor_stack.add_named(self._editor, "editor")
+        self._editor_stack.add_named(self._editor_empty, "empty")
+        self._editor_stack.set_visible_child_name("empty")
 
         edit_toolbar = Adw.ToolbarView()
         self._edit_header = Adw.HeaderBar()
@@ -372,7 +406,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._edit_header.pack_end(menu_btn)
 
         edit_toolbar.add_top_bar(self._edit_header)
-        edit_toolbar.set_content(self._editor)
+        edit_toolbar.set_content(self._editor_stack)
 
         self._inner_split.set_content(edit_toolbar)
         self._outer_split.set_content(self._inner_split)
@@ -456,22 +490,24 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _load_notes(self, folder: Folder, search: str = "") -> None:
         logger.debug("_load_notes: folder=%s search=%r", folder.name, search)
+        self._discard_empty_note()
         while row := self._note_list.get_first_child():
             self._note_list.remove(row)
         for note in self._db.get_notes(folder.id, search):
             self._note_list.append(NoteRow(note))
-        self._editor.clear()
-        self._current_note = None
+        self._update_empty_state(search)
+        self._select_first_note()
 
     def _load_notes_all(self, search: str = "") -> None:
         logger.debug("_load_notes_all: search=%r", search)
+        self._discard_empty_note()
         while row := self._note_list.get_first_child():
             self._note_list.remove(row)
         folder_names = {f.id: f.name for f in self._db.get_folders()}
         for note in self._db.get_all_notes(search):
             self._note_list.append(NoteRow(note, folder_name=folder_names.get(note.folder_id, "")))
-        self._editor.clear()
-        self._current_note = None
+        self._update_empty_state(search)
+        self._select_first_note()
 
     def _sync_note_list(self) -> None:
         """Update note list after sync, adding/removing rows without a full rebuild."""
@@ -516,12 +552,14 @@ class MainWindow(Adw.ApplicationWindow):
         self._last_action = "sync_note_list:unblock"
         self._note_list.handler_unblock(self._note_selected_id)
         self._last_action = "sync_note_list:done"
+        self._update_empty_state()
 
         if self._current_note and self._current_note.id not in new_ids:
             logger.debug("_sync_note_list: current note %s deleted remotely → clearing",
                          self._current_note.id)
             self._editor.clear()
             self._current_note = None
+            self._editor_stack.set_visible_child_name("empty")
 
     # ------------------------------------------------------------------
     # Signal handlers
@@ -553,12 +591,14 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if self._current_note is not None and self._current_note.id == row.note.id:
             return
+        self._discard_empty_note()
         # Reset delete confirmation when switching notes
         self._reset_delete_btn()
         self._current_note = row.note
         self._editor.load_note(row.note)
         self._editor.set_editable(True)
         self._delete_btn.set_sensitive(True)
+        self._editor_stack.set_visible_child_name("editor")
         if self._outer_split.get_collapsed():
             self._outer_split.set_show_sidebar(False)
 
@@ -576,11 +616,14 @@ class MainWindow(Adw.ApplicationWindow):
         while row:
             if isinstance(row, NoteRow) and row.note.id == note.id:
                 row.note = note
-                self._last_action = "refresh_note_row:before_build"
                 self._note_list.handler_block(self._note_selected_id)
                 row._build()
+                # Move to top if not already there (list is sorted newest-first)
+                if self._note_list.get_first_child() is not row:
+                    self._note_list.remove(row)
+                    self._note_list.prepend(row)
+                    self._note_list.select_row(row)
                 self._note_list.handler_unblock(self._note_selected_id)
-                self._last_action = "refresh_note_row:done"
                 break
             row = row.get_next_sibling()
 
@@ -597,7 +640,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._db.save_note(note)
         new_row = NoteRow(note)
         self._note_list.prepend(new_row)
+        self._editor_stack.set_visible_child_name("editor")
         self._note_list.select_row(new_row)
+        GLib.idle_add(self._editor.focus)
 
     def _on_new_folder(self, _btn) -> None:
         dialog = Adw.MessageDialog(
@@ -667,6 +712,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._editor.clear()
         self._editor.set_editable(False)
         self._delete_btn.set_sensitive(False)
+        self._editor_stack.set_visible_child_name("empty")
+        self._update_empty_state()
         if self._sync_engine:
             from .imap_backend import CmdType, _Cmd
             self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
@@ -674,6 +721,47 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
     # Save icon
     # ------------------------------------------------------------------
+
+    def _select_first_note(self) -> None:
+        """Select and load the first note row, or show the empty editor state."""
+        first = self._note_list.get_first_child()
+        if isinstance(first, NoteRow):
+            self._note_list.select_row(first)
+            self._current_note = first.note
+            self._editor.load_note(first.note)
+            self._editor.set_editable(True)
+            self._delete_btn.set_sensitive(True)
+            self._editor_stack.set_visible_child_name("editor")
+        else:
+            self._editor.clear()
+            self._current_note = None
+            self._editor_stack.set_visible_child_name("empty")
+
+    def _discard_empty_note(self) -> None:
+        """Delete a newly created note that the user never typed anything into."""
+        note = self._current_note
+        if note is None or note.imap_uid is not None:
+            return
+        # Check the live buffer first — autosave may not have fired yet
+        if self._editor._note is note and self._editor.has_content:
+            return
+        if note.body_text.strip():
+            return
+        self._db.delete_note(note.id)
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
+                self._note_list.remove(child)
+                break
+            child = child.get_next_sibling()
+
+    def _update_empty_state(self, search: str = "") -> None:
+        has_notes = self._note_list.get_first_child() is not None
+        if has_notes:
+            self._note_stack.set_visible_child_name("list")
+        else:
+            self._empty_state.set_title("No Results" if search else "No Notes")
+            self._note_stack.set_visible_child_name("empty")
 
     def _show_save_icon(self) -> None:
         self._save_icon.set_visible(True)
@@ -730,6 +818,8 @@ class MainWindow(Adw.ApplicationWindow):
                         self._editor.clear()
                         self._editor.set_editable(False)
                         self._delete_btn.set_sensitive(False)
+                        self._editor_stack.set_visible_child_name("empty")
+                    self._update_empty_state()
                     break
                 child = child.get_next_sibling()
 
@@ -745,8 +835,8 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_sync_now(self, _action, _param) -> None:
         if self._sync_engine:
-            self._sync_engine.request_sync()
-            self._show_toast("Syncing…")
+            self._sync_engine.request_full_sync()
+            self._show_toast("Reloading from IMAP…")
 
     def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
         query = entry.get_text().strip()

@@ -354,6 +354,43 @@ class Database:
             )
             conn.commit()
 
+    def get_note_by_apple_uuid(self, apple_uuid: str) -> Optional[Note]:
+        row = self._conn().execute(
+            "SELECT * FROM notes WHERE apple_uuid = ?", (apple_uuid,)
+        ).fetchone()
+        return _row_to_note(row) if row else None
+
+    def update_imap_uid(self, note_id: int, imap_uid: int) -> None:
+        """Update only the IMAP UID of a note without touching any other field."""
+        with self._lock:
+            conn = self._conn()
+            conn.execute("UPDATE notes SET imap_uid=? WHERE id=?", (imap_uid, note_id))
+            conn.commit()
+
+    def clear_imap_uids(self) -> None:
+        """Clear imap_uid for all non-deleted notes so the next sync re-fetches
+        everything from IMAP.  synced_at is intentionally preserved so notes are
+        not treated as dirty and won't be re-pushed."""
+        with self._lock:
+            conn = self._conn()
+            conn.execute("UPDATE notes SET imap_uid=NULL WHERE deleted=0")
+            conn.commit()
+
+    def delete_notes_missing_from_imap(self, folder_id: int) -> int:
+        """Mark as deleted any previously-synced note in folder_id whose imap_uid
+        is still NULL — meaning it was not matched during a full-reload fetch and
+        must have been deleted from IMAP."""
+        with self._lock:
+            conn = self._conn()
+            cursor = conn.execute(
+                "UPDATE notes SET deleted=1, modified_at=?"
+                " WHERE folder_id=? AND deleted=0"
+                "   AND imap_uid IS NULL AND synced_at IS NOT NULL",
+                (_now(), folder_id),
+            )
+            conn.commit()
+        return cursor.rowcount
+
     def delete_notes_by_uids(self, folder_id: int, uids: set[int]) -> int:
         """Mark notes deleted if they still carry one of the given IMAP UIDs. Returns count."""
         if not uids:

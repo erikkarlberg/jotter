@@ -33,6 +33,7 @@ class SyncEventType(Enum):
     AUTH_REQUIRED = auto()
     CONNECTED = auto()
     DISCONNECTED = auto()
+    SYNC_CONFLICT = auto()   # data = number of conflicting notes skipped this cycle
 
 
 @dataclass
@@ -68,7 +69,7 @@ class ImapSyncEngine(threading.Thread):
     def __init__(
         self,
         db,                          # models.Database instance
-        get_credentials_cb: Callable,  # () -> google credentials
+        get_credentials_cb: Callable,  # () -> ImapCredentials | None
         event_cb: Callable[[SyncEvent], None],
     ):
         super().__init__(daemon=True, name="imap-sync")
@@ -106,18 +107,32 @@ class ImapSyncEngine(threading.Thread):
     def request_sync(self) -> None:
         self.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
 
+    def request_full_sync(self) -> None:
+        """Drop all cached IMAP UIDs then run a sync cycle.
+
+        Clearing the UIDs (without touching synced_at) means the next _pull
+        treats every remote message as new, re-fetches its headers and body,
+        and reconciles against the local DB via UUID dedup.  Notes that have
+        vanished from IMAP are caught because _pull sees an empty known_uids
+        set — but we also do a separate pass to mark as deleted any local
+        note whose imap_uid is no longer in the remote set after re-population.
+        """
+        self._db.clear_imap_uids()
+        self.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
+
     # ------------------------------------------------------------------
     # Core sync logic
     # ------------------------------------------------------------------
 
     def _sync_cycle(self) -> None:
-        creds = self._get_creds()   # returns ImapCredentials | None
+        creds = self._get_creds()
         if creds is None:
             self._emit(SyncEventType.AUTH_REQUIRED)
             return
 
         try:
             import imapclient
+            import imapclient.exceptions as _imap_exc
         except ImportError:
             logger.error("imapclient not installed")
             self._emit(SyncEventType.SYNC_ERROR, error="imapclient not installed")
@@ -127,38 +142,54 @@ class ImapSyncEngine(threading.Thread):
         if email_addr and not self._db.get_meta("email"):
             self._db.set_meta("email", email_addr)
 
-        with imapclient.IMAPClient(IMAP_HOST, port=IMAP_PORT, ssl=True) as client:
-            # Pass raw access token — imapclient builds the XOAUTH2 auth string internally
-            client.oauth2_login(email_addr, creds.access_token)
-            self._emit(SyncEventType.CONNECTED)
-
-            notes_folders = self._get_notes_folders(client)
-            logger.info("Syncing %d Notes folder(s): %s", len(notes_folders),
-                        [n for _, n in notes_folders])
-
-            for imap_name, display_name in notes_folders:
-                folder = self._db.ensure_folder(display_name, imap_name)
-
-                # Check UIDVALIDITY per folder
-                status = client.select_folder(imap_name, readonly=False)
-                uid_validity = str(status.get(b"UIDVALIDITY", ""))
-                stored_validity = self._db.get_meta(f"uidvalidity:{imap_name}")
-                if stored_validity and stored_validity != uid_validity:
-                    logger.warning("UIDVALIDITY changed for %s — clearing cached UIDs", imap_name)
-                    self._clear_uids(folder.id)
-                self._db.set_meta(f"uidvalidity:{imap_name}", uid_validity)
-
-                # 1. Pull remote → local
-                self._pull(client, folder, imap_name)
-
-                # 2. Push local dirty → remote
-                self._push(client, folder, imap_name, email_addr)
+        try:
+            with imapclient.IMAPClient(IMAP_HOST, port=IMAP_PORT, ssl=True) as client:
+                client.oauth2_login(email_addr, creds.access_token)
+                self._emit(SyncEventType.CONNECTED)
+                self._run_folders(client, email_addr)
+        except _imap_exc.LoginError:
+            # GOA always refreshes via call_get_access_token_sync; a LoginError here
+            # means the account itself needs re-authorisation, not just a token refresh.
+            logger.warning("IMAP login failed — account may need re-authorisation")
+            self._emit(SyncEventType.AUTH_REQUIRED)
+            return
 
         self._emit(SyncEventType.SYNC_COMPLETE)
 
+    def _run_folders(self, client, email_addr: str) -> None:
+        notes_folders = self._get_notes_folders(client)
+        logger.info("Syncing %d Notes folder(s): %s", len(notes_folders),
+                    [n for _, n in notes_folders])
+
+        for imap_name, display_name in notes_folders:
+            folder = self._db.ensure_folder(display_name, imap_name)
+
+            # Check UIDVALIDITY per folder
+            status = client.select_folder(imap_name, readonly=False)
+            uid_validity = str(status.get(b"UIDVALIDITY", ""))
+            stored_validity = self._db.get_meta(f"uidvalidity:{imap_name}")
+            if stored_validity and stored_validity != uid_validity:
+                logger.warning("UIDVALIDITY changed for %s — clearing cached UIDs", imap_name)
+                self._clear_uids(folder.id)
+            self._db.set_meta(f"uidvalidity:{imap_name}", uid_validity)
+
+            # 1. Pull remote → local
+            self._pull(client, folder, imap_name)
+
+            # 2. Push local dirty → remote
+            self._push(client, folder, imap_name, email_addr)
+
     def _get_notes_folders(self, client) -> list[tuple[str, str]]:
         """Return [(imap_name, display_name)] for the root Notes folder and all subfolders."""
-        all_folder_names = [f[2] for f in client.list_folders()]
+        all_folders = client.list_folders()
+
+        # Read the path separator from the server rather than assuming '/'.
+        sep = "/"
+        if all_folders:
+            raw_sep = all_folders[0][1] or b"/"
+            sep = raw_sep.decode() if isinstance(raw_sep, bytes) else raw_sep
+
+        all_folder_names = [f[2] for f in all_folders]
 
         # Find root Notes folder
         root = None
@@ -174,7 +205,7 @@ class ImapSyncEngine(threading.Thread):
         # Gmail label inheritance makes subfolder notes also appear in the root IMAP folder;
         # syncing subfolders first means the root pass sees them as duplicates and skips them.
         result = []
-        prefix = root + "/"
+        prefix = root + sep
         for name in all_folder_names:
             if name.startswith(prefix):
                 display = name[len(prefix):]
@@ -198,6 +229,7 @@ class ImapSyncEngine(threading.Thread):
 
         new_uids = remote_uids - known_uids
         changed = False
+        n_conflicts = 0
 
         if new_uids:
             fetched = client.fetch(list(new_uids), ["RFC822", "ENVELOPE", "INTERNALDATE"])
@@ -206,19 +238,59 @@ class ImapSyncEngine(threading.Thread):
                 if not raw:
                     continue
                 note = self._parse_message(raw, uid, folder.id)
+
+                # Before saving, check for conflict or deleted-revival by apple_uuid.
+                # This is the stable identifier Apple Notes keeps across all edits.
+                if note.apple_uuid:
+                    local = self._db.get_note_by_apple_uuid(note.apple_uuid)
+                    if local and local.folder_id == folder.id:
+                        if local.deleted:
+                            # Note was deleted locally. Update the imap_uid to the new
+                            # remote UID so _push can issue the remote delete, but don't
+                            # revive the note.
+                            self._db.update_imap_uid(local.id, uid)
+                            continue
+                        if local.is_dirty:
+                            # Local has unsaved edits that would be overwritten by the
+                            # remote version. Skip; _push will upload the local version
+                            # and win the conflict with a new UID.
+                            n_conflicts += 1
+                            logger.info(
+                                "Sync conflict on note %s (%r) — keeping local edits",
+                                local.id, local.subject,
+                            )
+                            continue
+
                 result = self._db.save_note(note)
                 if result.id:
                     changed = True
 
-        # Detect remotely deleted notes: UIDs we knew about that have vanished.
-        # Run AFTER processing new UIDs so a modified note (old UID deleted, new UID added
-        # with the same Message-ID) is updated first and won't be falsely marked deleted.
-        vanished_uids = known_uids - remote_uids
+        # Detect remotely deleted notes.  Two cases:
+        #   Normal sync: UIDs we had before are no longer on the server.
+        #   Full reload:  known_uids was empty (UIDs were cleared), so we detect
+        #                 deletions by finding synced notes whose imap_uid is still
+        #                 NULL after the re-population pass above — they were never
+        #                 matched to a remote UID and must have been deleted remotely.
+        if known_uids:
+            vanished_uids = known_uids - remote_uids
+        else:
+            vanished_uids = set()  # handled below via delete_notes_missing_from_imap
         if vanished_uids:
             n_deleted = self._db.delete_notes_by_uids(folder.id, vanished_uids)
             if n_deleted:
                 logger.info("Marked %d note(s) deleted (remote removal) in %s", n_deleted, folder_name)
                 changed = True
+        elif not known_uids:
+            # Full-reload path: notes that were previously synced but whose
+            # imap_uid is still NULL after the fetch loop were not found on the
+            # server — they have been deleted remotely.
+            n_deleted = self._db.delete_notes_missing_from_imap(folder.id)
+            if n_deleted:
+                logger.info("Marked %d note(s) deleted (missing from IMAP) in %s", n_deleted, folder_name)
+                changed = True
+
+        if n_conflicts:
+            self._emit(SyncEventType.SYNC_CONFLICT, data=n_conflicts)
 
         if changed:
             self._emit(SyncEventType.NOTES_UPDATED, data=folder.id)
@@ -227,16 +299,18 @@ class ImapSyncEngine(threading.Thread):
         """Upload local dirty notes to IMAP and push deletions."""
         import uuid as _uuid_mod
 
-        # Delete remotely any notes that were deleted locally
+        # Batch-delete all notes that were deleted locally in one round-trip.
         pending_deletes = self._db.get_notes_pending_imap_delete(folder.id)
-        for note in pending_deletes:
+        if pending_deletes:
+            uids_to_delete = [n.imap_uid for n in pending_deletes]
             try:
-                client.delete_messages([note.imap_uid])
+                client.delete_messages(uids_to_delete)
                 client.expunge()
-                logger.info("Deleted IMAP UID=%s for note %s", note.imap_uid, note.id)
+                logger.info("Deleted IMAP UIDs %s in %s", uids_to_delete, folder_name)
             except Exception as exc:
-                logger.warning("Could not delete IMAP UID %s: %s", note.imap_uid, exc)
-            self._db.mark_imap_deleted(note.id)
+                logger.warning("Could not delete IMAP UIDs %s: %s", uids_to_delete, exc)
+            for note in pending_deletes:
+                self._db.mark_imap_deleted(note.id)
 
         dirty = self._db.get_dirty_notes(folder.id)
         if not dirty and not pending_deletes:
@@ -246,6 +320,10 @@ class ImapSyncEngine(threading.Thread):
             return
 
         for note in dirty:
+            # Don't push placeholder notes that the user never typed anything into.
+            if not note.body_text.strip() and note.imap_uid is None:
+                continue
+
             # Assign a stable UUID if this note doesn't have one yet.
             # Apple Notes uses X-Universally-Unique-Identifier to track notes
             # across edits, so we must include this on every message we push.
@@ -253,19 +331,31 @@ class ImapSyncEngine(threading.Thread):
                 note.apple_uuid = str(_uuid_mod.uuid4()).upper()
 
             msg_bytes = self._note_to_rfc822(note, email_addr)
-            # Append new message
+
+            # Capture UIDNEXT *before* APPEND so we can locate the new message
+            # reliably without depending on a header search over the whole folder.
+            folder_status = client.folder_status(folder_name, [b"UIDNEXT"])
+            uidnext = folder_status.get(b"UIDNEXT", 1)
+
             client.append(
                 folder_name,
                 msg_bytes,
                 flags=["\\Seen"],
                 msg_time=_parse_dt(note.modified_at),
             )
-            # Retrieve UID of the just-appended message
-            result = client.search(["HEADER", "X-Jotter-Id", str(note.id)])
-            new_uid = result[-1] if result else None
+
+            # Search UIDs >= uidnext, optionally filtered by our tracking header.
+            # Fall back to the raw UID range if the server doesn't support HEADER search.
+            try:
+                candidates = client.search(
+                    ["UID", f"{uidnext}:*", "HEADER", "X-Jotter-Id", str(note.id)]
+                )
+            except Exception:
+                candidates = client.search(["UID", f"{uidnext}:*"])
+            new_uid = candidates[-1] if candidates else None
 
             if new_uid:
-                # Delete old IMAP message if it existed
+                # Delete the old IMAP message if it existed
                 if note.imap_uid and note.imap_uid != new_uid:
                     try:
                         client.delete_messages([note.imap_uid])
@@ -273,7 +363,7 @@ class ImapSyncEngine(threading.Thread):
                     except Exception as exc:
                         logger.warning("Could not delete old UID %s: %s", note.imap_uid, exc)
 
-                # Get the Message-ID from the newly appended message
+                # Retrieve the Message-ID from the freshly appended message
                 fetched = client.fetch([new_uid], ["ENVELOPE"])
                 envelope = fetched.get(new_uid, {}).get(b"ENVELOPE")
                 msg_id = ""
@@ -304,15 +394,21 @@ class ImapSyncEngine(threading.Thread):
 
         msg = email.message_from_bytes(raw)
 
-        # Subject
+        # Subject — handle unknown charsets gracefully
         subject = ""
         raw_subject = msg.get("Subject", "")
         if raw_subject:
             parts = email.header.decode_header(raw_subject)
-            subject = "".join(
-                p.decode(enc or "utf-8") if isinstance(p, bytes) else p
-                for p, enc in parts
-            )
+            decoded = []
+            for p, enc in parts:
+                if isinstance(p, bytes):
+                    try:
+                        decoded.append(p.decode(enc or "utf-8"))
+                    except (LookupError, UnicodeDecodeError):
+                        decoded.append(p.decode("utf-8", errors="replace"))
+                else:
+                    decoded.append(p)
+            subject = "".join(decoded)
 
         # Message-ID — store None rather than "" so UNIQUE constraint allows multiple missing IDs
         message_id = (msg.get("Message-ID") or "").strip() or None
@@ -320,15 +416,18 @@ class ImapSyncEngine(threading.Thread):
         # Apple Notes' stable UUID — unchanged across all edits, unlike Message-ID
         apple_uuid = (msg.get("X-Universally-Unique-Identifier") or "").strip().upper() or None
 
-        # Dates
+        # Apple Notes sets Date: to the last-edit time and X-Mail-Created-Date: to the
+        # original creation time.  Map these correctly so round-trips preserve both dates.
         date_str = msg.get("Date", "")
+        x_created_str = msg.get("X-Mail-Created-Date", "")
         try:
-            created_at = email.utils.parsedate_to_datetime(date_str).isoformat()
+            modified_at = email.utils.parsedate_to_datetime(date_str).isoformat()
         except Exception:
-            created_at = _now()
-
-        x_modified = msg.get("X-Uniform-Type-Identifier", "")  # Apple Notes header
-        modified_at = created_at
+            modified_at = _now()
+        try:
+            created_at = email.utils.parsedate_to_datetime(x_created_str).isoformat()
+        except Exception:
+            created_at = modified_at  # fall back to modified time if header absent
 
         # Body — prefer HTML, fall back to plain
         body_html = ""
@@ -368,7 +467,7 @@ class ImapSyncEngine(threading.Thread):
 
     @staticmethod
     def _note_to_rfc822(note, from_addr: str) -> bytes:
-        """Serialize a Note to an RFC2822 message."""
+        """Serialize a Note to an RFC2822 message compatible with Apple Notes."""
         msg = email.message.EmailMessage()
         msg["From"] = from_addr
         msg["To"] = from_addr
@@ -387,10 +486,20 @@ class ImapSyncEngine(threading.Thread):
         if note.apple_uuid:
             msg["X-Universally-Unique-Identifier"] = note.apple_uuid
 
-        html_body = note.body_html or f"<html><body><div>{note.body_text}</div></body></html>"
-        # Ensure it's wrapped in html/body if it isn't already
-        if not html_body.lower().startswith("<html"):
-            html_body = f"<html><body>{html_body}</body></html>"
+        html_body = note.body_html or "<div><br></div>"
+
+        # Wrap bare content in Apple Notes' own HTML envelope so the format is
+        # identical to what Apple Notes writes.  This prevents Apple from rewriting
+        # the structure on every edit and stops the DOCTYPE / meta-charset oscillation
+        # we observed in interop testing.
+        if not html_body.lower().lstrip().startswith("<html"):
+            html_body = (
+                "<html><head></head>"
+                '<body style="overflow-wrap: break-word; -webkit-nbsp-mode: space;'
+                ' line-break: after-white-space;">'
+                f"{html_body}"
+                "</body></html>"
+            )
 
         msg.set_content(note.body_text or "", subtype="plain", charset="utf-8")
         msg.add_alternative(html_body, subtype="html", charset="utf-8")

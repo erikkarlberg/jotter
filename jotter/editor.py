@@ -116,6 +116,17 @@ class EditorWidget(Gtk.Box):
         self._view.set_editable(False)
         self._view.set_cursor_visible(False)
 
+    def focus(self) -> None:
+        """Move keyboard focus into the text view."""
+        self._view.grab_focus()
+
+    @property
+    def has_content(self) -> bool:
+        """True if the buffer contains any non-whitespace text."""
+        start = self._buffer.get_start_iter()
+        end = self._buffer.get_end_iter()
+        return bool(self._buffer.get_text(start, end, False).strip())
+
     def set_editable(self, editable: bool) -> None:
         self._view.set_editable(editable)
         self._view.set_cursor_visible(editable)
@@ -126,7 +137,7 @@ class EditorWidget(Gtk.Box):
     # ------------------------------------------------------------------
 
     def _build_toolbar(self) -> Gtk.Box:
-        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bar = Gtk.CenterBox()
         bar.set_margin_start(8)
         bar.set_margin_end(8)
         bar.set_margin_top(4)
@@ -135,7 +146,7 @@ class EditorWidget(Gtk.Box):
 
         self._fmt_buttons: dict[str, Gtk.ToggleButton] = {}
 
-        # Linked inline formatting group
+        # Linked inline formatting group (centered)
         inline_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         inline_box.add_css_class("linked")
 
@@ -154,43 +165,7 @@ class EditorWidget(Gtk.Box):
             inline_box.append(btn)
             self._fmt_buttons[tag_name] = btn
 
-        bar.append(inline_box)
-
-        # Separator
-        sep = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        sep.set_margin_start(4)
-        sep.set_margin_end(4)
-        bar.append(sep)
-
-        # Heading group
-        heading_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        heading_box.add_css_class("linked")
-
-        for tag_name, label, tooltip in [
-            (TAG_HEADING1, "H1", "Heading 1"),
-            (TAG_HEADING2, "H2", "Heading 2"),
-            (TAG_HEADING3, "H3", "Heading 3"),
-        ]:
-            btn = Gtk.ToggleButton(label=label)
-            btn.set_tooltip_text(tooltip)
-            btn.connect("toggled", self._on_format_toggle, tag_name)
-            heading_box.append(btn)
-            self._fmt_buttons[tag_name] = btn
-
-        bar.append(heading_box)
-
-        # Separator
-        sep2 = Gtk.Separator(orientation=Gtk.Orientation.VERTICAL)
-        sep2.set_margin_start(4)
-        sep2.set_margin_end(4)
-        bar.append(sep2)
-
-        # Monospace
-        mono_btn = Gtk.ToggleButton(label="</>")
-        mono_btn.set_tooltip_text("Monospace / Code")
-        mono_btn.connect("toggled", self._on_format_toggle, TAG_MONOSPACE)
-        bar.append(mono_btn)
-        self._fmt_buttons[TAG_MONOSPACE] = mono_btn
+        bar.set_center_widget(inline_box)
 
         return bar
 

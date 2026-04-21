@@ -37,7 +37,22 @@
       "Bash(identify /tmp/test_icon.png)",
       "Bash(appstreamcli validate *)",
       "Bash(appstreamcli --version)",
-      "Bash(gnome-software --version)"
+      "Bash(gnome-software --version)",
+      "Bash(jotter *)",
+      "Bash(jotter)",
+      "Read(//tmp/**)",
+      "Bash(/home/erik/.local/bin/jotter *)",
+      "Bash(DISPLAY=:0 /home/erik/.local/bin/jotter)",
+      "Bash(find /home/erik/Developer/jotter -name \"*.pyc\" -delete)",
+      "Read(//home/erik/.local/bin/**)",
+      "Read(//usr/bin/**)",
+      "Read(//usr/local/bin/**)",
+      "Bash(cp /home/erik/Developer/jotter/jotter/editor.py /home/erik/Developer/jotter/build/debian/jotter_0.1.0/usr/lib/python3/dist-packages/jotter/editor.py)",
+      "Bash(cp /home/erik/Developer/jotter/jotter/window.py /home/erik/Developer/jotter/build/debian/jotter_0.1.0/usr/lib/python3/dist-packages/jotter/window.py)",
+      "Bash(cp /home/erik/Developer/jotter/jotter/models.py /home/erik/Developer/jotter/build/debian/jotter_0.1.0/usr/lib/python3/dist-packages/jotter/models.py)",
+      "Bash(cp /home/erik/Developer/jotter/jotter/utils.py /home/erik/Developer/jotter/build/debian/jotter_0.1.0/usr/lib/python3/dist-packages/jotter/utils.py)",
+      "Bash(cp /home/erik/Developer/jotter/jotter/imap_backend.py /home/erik/Developer/jotter/build/debian/jotter_0.1.0/usr/lib/python3/dist-packages/jotter/imap_backend.py)",
+      "Bash(sudo dpkg *)"
     ]
   }
 }
