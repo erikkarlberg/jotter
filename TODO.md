@@ -25,19 +25,17 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 - 1.2.4 [ ] **Export note as PDF** — render the note through GTK's print-to-PDF path.
 - 1.2.5 [ ] **Import from Markdown** — parse a `.md` file, convert to HTML, create a new note in the selected folder.
 - 1.2.6 [ ] **Import from plain text** — create a new note from a `.txt` file.
-- 1.2.7 [ ] **Import from Apple Notes export (.enex / HTML zip)** — bulk-import an Apple Notes backup archive.
-- 1.2.8 [ ] **Batch export folder** — export all notes in a folder as a zip of Markdown files.
+- 1.2.7 [ ] **Batch export folder** — export all notes in a folder as a zip of Markdown files.
 
 ---
 
 ## 2. Editor Improvements
 
 - 2.1 [ ] **Image attachments** — Apple Notes stores images as MIME multipart attachments with `Content-ID` references in the HTML body (not Base64 embedded in the HTML). Jotter must construct and parse the same `multipart/mixed` structure to correctly display images synced from Apple Notes and to have images created in Jotter appear on Apple devices.
-- 2.2 [ ] **Word and character count** — displayed in the editor footer.
-- 2.3 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
-- 2.4 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
-- 2.5 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
-- 2.6 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
+- 2.2 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
+- 2.3 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
+- 2.4 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
+- 2.5 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
 
 ---
 
@@ -45,17 +43,15 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 - 3.1 [ ] **Sync status indicator** — show a spinner/icon in the header that distinguishes: idle, syncing, error, offline.
 - 3.2 [ ] **Manual sync button** — force a full pull+push from the toolbar (useful when offline for a while).
-- 3.3 [ ] **Selective folder sync** — let the user choose which IMAP folders are synced vs. local-only.
-- 3.4 [ ] **Conflict UI** — when a conflict is detected, show a diff and let the user pick which version to keep rather than silently preferring local.
-- 3.5 [ ] **Desktop notification on sync errors** — use `GLib.Notification` to surface sync failures without the user having to open the error log.
+- 3.3 [ ] **Conflict UI** — when a conflict is detected, show a diff and let the user pick which version to keep rather than silently preferring local.
+- 3.4 [ ] **Desktop notification on sync errors** — use `GLib.Notification` to surface sync failures without the user having to open the error log.
 
 ---
 
 ## 4. Search & Discovery
 
-- 4.1 [ ] **Advanced search filters** — filter by folder and date range from the search bar.
-- 4.2 [ ] **Search result highlighting** — highlight matched terms in both the note list snippet and the editor body.
-- 4.3 [ ] **Recents / jump-to** — Ctrl+P command palette that fuzzy-searches note titles for quick navigation.
+- 4.1 [ ] **Search result highlighting** — highlight matched terms in both the note list snippet and the editor body.
+- 4.2 [ ] **Recents / jump-to** — Ctrl+P command palette that fuzzy-searches note titles for quick navigation.
 
 ---
 
