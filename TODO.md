@@ -53,10 +53,9 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ## 4. Search & Discovery
 
-- 4.1 [ ] **Advanced search filters** — filter by folder, date range, or tag from the search bar.
+- 4.1 [ ] **Advanced search filters** — filter by folder and date range from the search bar.
 - 4.2 [ ] **Search result highlighting** — highlight matched terms in both the note list snippet and the editor body.
 - 4.3 [ ] **Recents / jump-to** — Ctrl+P command palette that fuzzy-searches note titles for quick navigation.
-- 4.4 [ ] **Note tags** — Apple Notes tags (iOS 15+) are plain `#hashtag` text in the note body and are present in the IMAP message. Jotter should parse these and surface them as filterable labels; tags added in Jotter must be written as `#hashtag` text so they sync to Apple devices.
 
 ---
 
