@@ -32,16 +32,12 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ## 2. Editor Improvements
 
-- 2.1 [ ] **Checklists** — Apple Notes stores checklists in IMAP HTML as `<ul class="Apple-dash-list"><li class="Apple-dash-list-item [checked]">`. Jotter must read and write this exact format for checklists to round-trip correctly on Apple devices.
-- 2.2 [ ] **Bulleted and numbered lists** — `<ul>` / `<ol>` support in the HTML ↔ TextBuffer converter and a toolbar button for each.
-- 2.3 [ ] **Hyperlinks** — insert/edit clickable `<a href>` links; Ctrl+click to open in browser.
-- 2.4 [ ] **Image attachments** — Apple Notes stores images as MIME multipart attachments with `Content-ID` references in the HTML body (not Base64 embedded in the HTML). Jotter must construct and parse the same `multipart/mixed` structure to correctly display images synced from Apple Notes and to have images created in Jotter appear on Apple devices.
-- 2.5 [ ] **Table support** — insert a simple `<table>` with add/remove row/column actions.
-- 2.6 [ ] **Word and character count** — displayed in the editor footer.
-- 2.7 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
-- 2.8 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
-- 2.9 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
-- 2.10 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
+- 2.1 [ ] **Image attachments** — Apple Notes stores images as MIME multipart attachments with `Content-ID` references in the HTML body (not Base64 embedded in the HTML). Jotter must construct and parse the same `multipart/mixed` structure to correctly display images synced from Apple Notes and to have images created in Jotter appear on Apple devices.
+- 2.2 [ ] **Word and character count** — displayed in the editor footer.
+- 2.3 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
+- 2.4 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
+- 2.5 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
+- 2.6 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
 
 ---
 
