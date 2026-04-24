@@ -16,9 +16,7 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 ### 1.1 Organisation
 - 1.1.1 [~] **Drag-and-drop notes between folders** — drag source on `NoteRow` and drop target on `FolderRow` exist; validate that the IMAP move is triggered and reflected correctly after a drop.
 - 1.1.2 [ ] **Subfolder support** — display nested IMAP folders (e.g. `Notes/Work/Projects`) as an indented tree in the sidebar, create/rename/delete subfolders, and move notes into them.
-- 1.1.3 [ ] **Note pinning / favourites** — pin a note to the top of any folder list; stored as a local SQLite flag only. Apple Notes pins on iOS/macOS are not exposed over IMAP, so the two are independent.
-- 1.1.4 [ ] **Note reordering** — manual drag-to-reorder within a folder list (local order stored in DB, not synced to IMAP).
-- 1.1.5 [ ] **Sort options** — sort note list by: last modified (default), created date, title A–Z, title Z–A.
+- 1.1.3 [ ] **Sort options** — sort note list by: last modified (default), created date, title A–Z, title Z–A.
 
 ### 1.2 Import & Export
 - 1.2.1 [ ] **Export note as Markdown** — convert the HTML body to Markdown and write to a `.md` file via a native save dialog.
@@ -34,18 +32,16 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ## 2. Editor Improvements
 
-- 2.1 [ ] **Checklists** — Apple Notes stores checklists in IMAP HTML as `<ul class="Apple-dash-list"><li class="Apple-dash-list-item [checked]">`. Jotter must read and write this exact format for checklists to round-trip correctly on Apple devices. Plain `☐/☑` Unicode characters will not produce real Apple Notes checklists.
+- 2.1 [ ] **Checklists** — Apple Notes stores checklists in IMAP HTML as `<ul class="Apple-dash-list"><li class="Apple-dash-list-item [checked]">`. Jotter must read and write this exact format for checklists to round-trip correctly on Apple devices.
 - 2.2 [ ] **Bulleted and numbered lists** — `<ul>` / `<ol>` support in the HTML ↔ TextBuffer converter and a toolbar button for each.
-- 2.3 [ ] **Horizontal rule** — insert a visual separator. `<hr>` is not a native Apple Notes element and will be stripped on the next Apple sync; treat as a Jotter-local display feature only.
-- 2.4 [ ] **Inline code and code blocks** — already have monospace span; add a full code-block style (background, no wrap). Apple Notes has no code block concept, so this is a Jotter-local display feature; the monospace formatting will survive sync but the block styling will not.
-- 2.5 [ ] **Hyperlinks** — insert/edit clickable `<a href>` links; Ctrl+click to open in browser.
-- 2.6 [ ] **Image attachments** — Apple Notes stores images as MIME multipart attachments with `Content-ID` references in the HTML body (not Base64 embedded in the HTML). Jotter must construct and parse the same `multipart/mixed` structure to correctly display images synced from Apple Notes and to have images created in Jotter appear on Apple devices.
-- 2.7 [ ] **Table support** — insert a simple `<table>` with add/remove row/column actions.
-- 2.8 [ ] **Word and character count** — displayed in the editor footer.
-- 2.9 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
-- 2.10 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
-- 2.11 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
-- 2.12 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
+- 2.3 [ ] **Hyperlinks** — insert/edit clickable `<a href>` links; Ctrl+click to open in browser.
+- 2.4 [ ] **Image attachments** — Apple Notes stores images as MIME multipart attachments with `Content-ID` references in the HTML body (not Base64 embedded in the HTML). Jotter must construct and parse the same `multipart/mixed` structure to correctly display images synced from Apple Notes and to have images created in Jotter appear on Apple devices.
+- 2.5 [ ] **Table support** — insert a simple `<table>` with add/remove row/column actions.
+- 2.6 [ ] **Word and character count** — displayed in the editor footer.
+- 2.7 [ ] **Spell check** — integrate GtkSourceView or `enchant` for on-the-fly spell checking.
+- 2.8 [ ] **Find & replace within note** — Ctrl+H opens a find-and-replace bar inside the editor.
+- 2.9 [ ] **Undo/redo beyond default** — ensure undo history survives autosave cycles.
+- 2.10 [ ] **Focus / distraction-free mode** — hide sidebars to full-screen the editor with a keyboard shortcut (e.g. F11).
 
 ---
 
@@ -61,10 +57,10 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ## 4. Search & Discovery
 
-- 4.1 [ ] **Advanced search filters** — filter by folder, date range, tag, or has-attachments from the search bar.
+- 4.1 [ ] **Advanced search filters** — filter by folder, date range, or tag from the search bar.
 - 4.2 [ ] **Search result highlighting** — highlight matched terms in both the note list snippet and the editor body.
 - 4.3 [ ] **Recents / jump-to** — Ctrl+P command palette that fuzzy-searches note titles for quick navigation.
-- 4.4 [ ] **Note tags / labels** — Apple Notes tags (iOS 15+) are plain `#hashtag` text stored in the note body, which means they are present in the IMAP message. Jotter should parse these from the body and surface them as filterable labels. Tags added in Jotter should likewise be written as `#hashtag` text so they sync to Apple devices; a purely local tag store would silently diverge.
+- 4.4 [ ] **Note tags** — Apple Notes tags (iOS 15+) are plain `#hashtag` text in the note body and are present in the IMAP message. Jotter should parse these and surface them as filterable labels; tags added in Jotter must be written as `#hashtag` text so they sync to Apple devices.
 
 ---
 
@@ -72,10 +68,8 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 - 5.1 [ ] **Preferences dialog** — `Adw.PreferencesWindow` covering: default font, font size, autosave interval, sync interval, keyboard shortcuts reference.
 - 5.2 [ ] **Font size control** — zoom in/out in the editor (Ctrl+= / Ctrl+-).
-- 5.3 [ ] **Colour accent for folders** — let the user assign a colour dot to folders for visual scanning.
-- 5.4 [ ] **Note icon / emoji** — allow setting a per-note emoji icon shown in the note list.
-- 5.5 [ ] **Dark/light/auto theme** — explicit toggle in preferences (currently follows system; make it overridable).
-- 5.6 [ ] **Editor line spacing and width** — configurable max content width for comfortable long-form writing.
+- 5.3 [ ] **Dark/light/auto theme** — explicit toggle in preferences (currently follows system; make it overridable).
+- 5.4 [ ] **Editor line spacing and width** — configurable max content width for comfortable long-form writing.
 
 ---
 
