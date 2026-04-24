@@ -46,14 +46,21 @@ class AllNotesRow(Gtk.ListBoxRow):
 class FolderRow(Gtk.ListBoxRow):
     """Sidebar row for a single folder."""
 
-    def __init__(self, folder: Folder, on_note_dropped: Optional[Callable] = None):
+    def __init__(
+        self,
+        folder: Folder,
+        on_note_dropped: Optional[Callable] = None,
+        on_delete: Optional[Callable] = None,
+    ):
         super().__init__()
         self.folder = folder
         self._on_note_dropped_cb = on_note_dropped
+        self._on_delete_cb = on_delete
+        self._hovering = False
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         box.set_margin_start(12)
-        box.set_margin_end(12)
+        box.set_margin_end(4)
         box.set_margin_top(8)
         box.set_margin_bottom(8)
 
@@ -65,12 +72,65 @@ class FolderRow(Gtk.ListBoxRow):
         label.set_hexpand(True)
         label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
 
+        self._menu_btn = self._build_menu_btn()
+
         box.append(icon)
         box.append(label)
+        box.append(self._menu_btn)
         self.set_child(box)
 
         if on_note_dropped:
             self._setup_drop_target()
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self._on_hover_enter)
+        motion.connect("leave", self._on_hover_leave)
+        self.add_controller(motion)
+
+    def _build_menu_btn(self) -> Gtk.MenuButton:
+        btn = Gtk.MenuButton()
+        btn.set_icon_name("view-more-symbolic")
+        btn.add_css_class("flat")
+        btn.add_css_class("circular")
+        btn.set_valign(Gtk.Align.CENTER)
+        btn.set_visible(False)
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.set_margin_start(4)
+        inner.set_margin_end(4)
+        inner.set_margin_top(4)
+        inner.set_margin_bottom(4)
+
+        del_btn = Gtk.Button(label="Delete folder")
+        del_btn.add_css_class("flat")
+        del_btn.set_halign(Gtk.Align.FILL)
+        del_btn.connect("clicked", self._on_delete_clicked)
+        inner.append(del_btn)
+
+        popover = Gtk.Popover()
+        popover.set_child(inner)
+        popover.connect("closed", self._on_popover_closed)
+        btn.set_popover(popover)
+
+        return btn
+
+    def _on_hover_enter(self, _ctrl, _x, _y) -> None:
+        self._hovering = True
+        self._menu_btn.set_visible(True)
+
+    def _on_hover_leave(self, _ctrl) -> None:
+        self._hovering = False
+        if not self._menu_btn.get_popover().get_visible():
+            self._menu_btn.set_visible(False)
+
+    def _on_popover_closed(self, _popover) -> None:
+        if not self._hovering:
+            self._menu_btn.set_visible(False)
+
+    def _on_delete_clicked(self, _btn) -> None:
+        self._menu_btn.get_popover().popdown()
+        if self._on_delete_cb:
+            self._on_delete_cb(self.folder)
 
     def _setup_drop_target(self) -> None:
         target = Gtk.DropTarget.new(GObject.TYPE_STRING, Gdk.DragAction.MOVE)
@@ -100,19 +160,38 @@ class FolderRow(Gtk.ListBoxRow):
 class NoteRow(Gtk.ListBoxRow):
     """A single row in the note list."""
 
-    def __init__(self, note: Note, folder_name: str = ""):
+    def __init__(self, note: Note, folder_name: str = "", on_delete=None):
         super().__init__()
         self.note = note
         self._folder_name = folder_name
+        self._on_delete_cb = on_delete
+        self._hovering = False
+
+        # Outer row: content (hexpand) + ⋮ button
+        self._outer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self._content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._content.set_hexpand(True)
+        self._menu_btn = self._build_menu_btn()
+        self._outer.append(self._content)
+        self._outer.append(self._menu_btn)
+        self.set_child(self._outer)
+
         self._build()
         self._setup_drag()
 
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self._on_hover_enter)
+        motion.connect("leave", self._on_hover_leave)
+        self.add_controller(motion)
+
     def _build(self) -> None:
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        box.set_margin_start(16)
-        box.set_margin_end(16)
-        box.set_margin_top(12)
-        box.set_margin_bottom(12)
+        while child := self._content.get_first_child():
+            self._content.remove(child)
+
+        self._content.set_margin_start(16)
+        self._content.set_margin_end(0)
+        self._content.set_margin_top(12)
+        self._content.set_margin_bottom(12)
 
         subject = self.note.subject or "(no title)"
         title = Gtk.Label(label=subject)
@@ -127,8 +206,8 @@ class NoteRow(Gtk.ListBoxRow):
         preview.add_css_class("caption")
         preview.add_css_class("dim-label")
 
-        box.append(title)
-        box.append(preview)
+        self._content.append(title)
+        self._content.append(preview)
 
         if self._folder_name:
             tag_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
@@ -141,9 +220,52 @@ class NoteRow(Gtk.ListBoxRow):
             tag_label.add_css_class("dim-label")
             tag_box.append(icon)
             tag_box.append(tag_label)
-            box.append(tag_box)
+            self._content.append(tag_box)
 
-        self.set_child(box)
+    def _build_menu_btn(self) -> Gtk.MenuButton:
+        btn = Gtk.MenuButton()
+        btn.set_icon_name("view-more-symbolic")
+        btn.add_css_class("flat")
+        btn.add_css_class("circular")
+        btn.set_valign(Gtk.Align.CENTER)
+        btn.set_margin_end(4)
+        btn.set_visible(False)
+
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        inner.set_margin_start(4)
+        inner.set_margin_end(4)
+        inner.set_margin_top(4)
+        inner.set_margin_bottom(4)
+
+        del_btn = Gtk.Button(label="Delete note")
+        del_btn.add_css_class("flat")
+        del_btn.set_halign(Gtk.Align.FILL)
+        del_btn.connect("clicked", self._on_delete_clicked)
+        inner.append(del_btn)
+
+        popover = Gtk.Popover()
+        popover.set_child(inner)
+        popover.connect("closed", self._on_popover_closed)
+        btn.set_popover(popover)
+        return btn
+
+    def _on_hover_enter(self, _ctrl, _x, _y) -> None:
+        self._hovering = True
+        self._menu_btn.set_visible(True)
+
+    def _on_hover_leave(self, _ctrl) -> None:
+        self._hovering = False
+        if not self._menu_btn.get_popover().get_visible():
+            self._menu_btn.set_visible(False)
+
+    def _on_popover_closed(self, _popover) -> None:
+        if not self._hovering:
+            self._menu_btn.set_visible(False)
+
+    def _on_delete_clicked(self, _btn) -> None:
+        self._menu_btn.get_popover().popdown()
+        if self._on_delete_cb:
+            self._on_delete_cb(self.note)
 
     def _setup_drag(self) -> None:
         source = Gtk.DragSource.new()
@@ -167,19 +289,17 @@ class MainWindow(Adw.ApplicationWindow):
         db: Database,
         sync_engine: Optional[ImapSyncEngine] = None,
         auth_source: str = "none",
+        audit_log=None,
     ):
         super().__init__(application=app)
         self._db = db
         self._sync_engine = sync_engine
         self._auth_source = auth_source
+        self._audit_log = audit_log
         self._current_folder: Optional[Folder] = None
         self._current_note: Optional[Note] = None
         self._all_notes_mode: bool = False
         self._last_action: str = "init"
-
-        # Delete button two-click confirmation state
-        self._delete_confirm_pending: bool = False
-        self._delete_confirm_timeout_id: Optional[int] = None
 
         # Save icon auto-hide timeout
         self._save_icon_timeout_id: Optional[int] = None
@@ -372,38 +492,22 @@ class MainWindow(Adw.ApplicationWindow):
         self._save_icon.set_visible(False)
         self._edit_header.set_title_widget(self._save_icon)
 
-        # Delete button — trash icon with a sliding "?" confirm widget
-        # Layout (packed as one box into header end): [?] [trash]
-        delete_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-
-        self._delete_confirm_revealer = Gtk.Revealer()
-        self._delete_confirm_revealer.set_transition_type(
-            Gtk.RevealerTransitionType.SLIDE_LEFT
-        )
-        self._delete_confirm_revealer.set_transition_duration(150)
-        self._delete_confirm_revealer.set_reveal_child(False)
-
-        confirm_label = Gtk.Label(label="Delete?")
-        confirm_label.set_margin_end(6)
-        confirm_label.add_css_class("caption")
-        self._delete_confirm_revealer.set_child(confirm_label)
-
-        self._delete_btn = Gtk.Button()
-        self._delete_btn.set_icon_name("user-trash-symbolic")
-        self._delete_btn.set_tooltip_text("Delete note")
-        self._delete_btn.set_sensitive(False)
-        self._delete_btn.connect("clicked", self._on_delete_btn_clicked)
-
-        delete_box.append(self._delete_confirm_revealer)
-        delete_box.append(self._delete_btn)
-        self._edit_header.pack_end(delete_box)
-
         # ⋮ menu (Sync Now)
         menu_model = self._build_note_menu()
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("view-more-symbolic")
         menu_btn.set_menu_model(menu_model)
         self._edit_header.pack_end(menu_btn)
+
+        # Sync error indicator — hidden until an error occurs
+        self._error_btn = Gtk.Button()
+        self._error_btn.set_icon_name("dialog-warning-symbolic")
+        self._error_btn.set_tooltip_text("Sync errors — click for details")
+        self._error_btn.add_css_class("flat")
+        self._error_btn.add_css_class("error")
+        self._error_btn.set_visible(False)
+        self._error_btn.connect("clicked", self._on_error_btn_clicked)
+        self._edit_header.pack_end(self._error_btn)
 
         edit_toolbar.add_top_bar(self._edit_header)
         edit_toolbar.set_content(self._editor_stack)
@@ -467,7 +571,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         target_folder_row = None
         for folder in folders:
-            row = FolderRow(folder, on_note_dropped=self._move_note_to_folder)
+            row = FolderRow(folder, on_note_dropped=self._move_note_to_folder,
+                            on_delete=self._on_delete_folder_requested)
             self._folder_list.append(row)
             if folder.id == current_folder_id:
                 target_folder_row = row
@@ -494,7 +599,7 @@ class MainWindow(Adw.ApplicationWindow):
         while row := self._note_list.get_first_child():
             self._note_list.remove(row)
         for note in self._db.get_notes(folder.id, search):
-            self._note_list.append(NoteRow(note))
+            self._note_list.append(NoteRow(note, on_delete=self._on_delete_note_requested))
         self._update_empty_state(search)
         self._select_first_note()
 
@@ -505,7 +610,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._note_list.remove(row)
         folder_names = {f.id: f.name for f in self._db.get_folders()}
         for note in self._db.get_all_notes(search):
-            self._note_list.append(NoteRow(note, folder_name=folder_names.get(note.folder_id, "")))
+            self._note_list.append(NoteRow(note, folder_name=folder_names.get(note.folder_id, ""),
+                                           on_delete=self._on_delete_note_requested))
         self._update_empty_state(search)
         self._select_first_note()
 
@@ -518,7 +624,7 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             return
 
-        new_ids = {n.id for n in new_notes}
+        new_by_id = {n.id: n for n in new_notes}
 
         existing: dict[int, NoteRow] = {}
         child = self._note_list.get_first_child()
@@ -527,27 +633,49 @@ class MainWindow(Adw.ApplicationWindow):
                 existing[child.note.id] = child
             child = child.get_next_sibling()
 
-        if new_ids == set(existing.keys()):
+        to_remove = set(existing.keys()) - new_by_id.keys()
+        to_add = new_by_id.keys() - set(existing.keys())
+
+        if self._all_notes_mode:
+            folder_names = {f.id: f.name for f in self._db.get_folders()}
+        else:
+            folder_names = {}
+
+        # Check which existing rows need their displayed data refreshed.
+        to_update = set()
+        for nid, row in existing.items():
+            if nid not in new_by_id:
+                continue
+            note = new_by_id[nid]
+            new_fn = folder_names.get(note.folder_id, "") if self._all_notes_mode else ""
+            if (note.subject != row.note.subject
+                    or note.body_text != row.note.body_text
+                    or new_fn != row._folder_name):
+                to_update.add(nid)
+
+        if not to_remove and not to_add and not to_update:
             return
 
-        to_remove = set(existing.keys()) - new_ids
-        to_add = new_ids - set(existing.keys())
-        logger.debug("_sync_note_list: remove=%s add=%s", to_remove, to_add)
+        logger.debug("_sync_note_list: remove=%s add=%s update=%s",
+                     to_remove, to_add, to_update)
 
         self._last_action = "sync_note_list:block"
         self._note_list.handler_block(self._note_selected_id)
 
-        self._last_action = "sync_note_list:removing"
         for nid in to_remove:
             self._note_list.remove(existing[nid])
 
-        if self._all_notes_mode:
-            folder_names = {f.id: f.name for f in self._db.get_folders()}
-        self._last_action = "sync_note_list:prepending"
+        for nid in to_update:
+            row = existing[nid]
+            row.note = new_by_id[nid]
+            row._folder_name = folder_names.get(row.note.folder_id, "") if self._all_notes_mode else ""
+            row._build()
+
         for note in reversed(new_notes):
             if note.id not in existing:
                 fn = folder_names.get(note.folder_id, "") if self._all_notes_mode else ""
-                self._note_list.prepend(NoteRow(note, folder_name=fn))
+                self._note_list.prepend(NoteRow(note, folder_name=fn,
+                                                on_delete=self._on_delete_note_requested))
 
         self._last_action = "sync_note_list:unblock"
         self._note_list.handler_unblock(self._note_selected_id)
@@ -592,12 +720,9 @@ class MainWindow(Adw.ApplicationWindow):
         if self._current_note is not None and self._current_note.id == row.note.id:
             return
         self._discard_empty_note()
-        # Reset delete confirmation when switching notes
-        self._reset_delete_btn()
         self._current_note = row.note
         self._editor.load_note(row.note)
         self._editor.set_editable(True)
-        self._delete_btn.set_sensitive(True)
         self._editor_stack.set_visible_child_name("editor")
         if self._outer_split.get_collapsed():
             self._outer_split.set_show_sidebar(False)
@@ -607,6 +732,13 @@ class MainWindow(Adw.ApplicationWindow):
         self._db.save_note(note)
         self._show_save_icon()
         self._refresh_note_row(note)
+        # If All Notes is active, make sure this note appears (it may not be in the list
+        # if it was just created while viewing a specific folder that was then switched to All Notes)
+        if self._all_notes_mode:
+            self._ensure_note_in_list(note)
+        if self._audit_log:
+            action = "create" if not note.synced_at else "edit"
+            self._audit_log.record(action, note.id, note.subject)
         if self._sync_engine:
             from .imap_backend import CmdType, _Cmd
             self._sync_engine.cmd_queue.put(_Cmd(CmdType.NOTE_SAVED, data=note.id))
@@ -630,7 +762,11 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_new_note(self, _btn) -> None:
         if self._all_notes_mode:
             folders = self._db.get_folders()
-            folder = folders[0] if folders else self._db.ensure_folder("Notes", "Notes")
+            folder = (
+                next((f for f in folders if f.name == "Notes"), None)
+                or (folders[0] if folders else None)
+                or self._db.ensure_folder("Notes", "Notes")
+            )
         elif self._current_folder is not None:
             folder = self._current_folder
         else:
@@ -638,7 +774,7 @@ class MainWindow(Adw.ApplicationWindow):
         now = datetime.now(timezone.utc).isoformat()
         note = Note(folder_id=folder.id, created_at=now, modified_at=now)
         self._db.save_note(note)
-        new_row = NoteRow(note)
+        new_row = NoteRow(note, on_delete=self._on_delete_note_requested)
         self._note_list.prepend(new_row)
         self._editor_stack.set_visible_child_name("editor")
         self._note_list.select_row(new_row)
@@ -666,53 +802,75 @@ class MainWindow(Adw.ApplicationWindow):
                 self._db.ensure_folder(name, name)
                 self._load_folders()
 
-    # ------------------------------------------------------------------
-    # Delete button — two-click confirm
-    # ------------------------------------------------------------------
-
-    def _on_delete_btn_clicked(self, btn) -> None:
-        if self._current_note is None:
+    def _on_delete_folder_requested(self, folder: Folder) -> None:
+        count = self._db.get_note_count(folder.id)
+        if count > 0:
+            dialog = Adw.MessageDialog(
+                transient_for=self,
+                heading=f"Cannot Delete \u201c{folder.name}\u201d",
+                body=f"This folder contains {count} note{'s' if count != 1 else ''}. "
+                     "Move or delete all notes before deleting the folder.",
+            )
+            dialog.add_response("ok", "OK")
+            dialog.present()
             return
-        if not self._delete_confirm_pending:
-            # First click: slide out the "Delete?" label and turn the button red
-            self._delete_confirm_pending = True
-            self._delete_btn.add_css_class("destructive-action")
-            self._delete_btn.set_tooltip_text("Click again to confirm")
-            self._delete_confirm_revealer.set_reveal_child(True)
-            # Auto-disarm after 3 seconds
-            self._delete_confirm_timeout_id = GLib.timeout_add(3000, self._reset_delete_btn)
-        else:
-            # Second click: confirm and delete
-            self._reset_delete_btn()
-            self._do_delete_note()
 
-    def _reset_delete_btn(self) -> bool:
-        self._delete_confirm_pending = False
-        if self._delete_confirm_timeout_id is not None:
-            GLib.source_remove(self._delete_confirm_timeout_id)
-            self._delete_confirm_timeout_id = None
-        self._delete_btn.remove_css_class("destructive-action")
-        self._delete_btn.set_tooltip_text("Delete note")
-        self._delete_confirm_revealer.set_reveal_child(False)
-        return GLib.SOURCE_REMOVE
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading=f"Delete \u201c{folder.name}\u201d?",
+            body="This folder will be permanently deleted.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_delete_folder_response, folder)
+        dialog.present()
 
-    def _do_delete_note(self) -> None:
-        if self._current_note is None:
+    def _on_delete_folder_response(self, _dialog, response_id: str, folder: Folder) -> None:
+        if response_id != "delete":
             return
-        note_id = self._current_note.id
-        self._db.delete_note(note_id)
-        # Remove row without a full reload
+        self._db.delete_folder(folder.id)
+        if self._current_folder and self._current_folder.id == folder.id:
+            self._all_notes_mode = True
+            self._current_folder = None
+        self._load_folders()
+
+    def _on_delete_note_requested(self, note: Note) -> None:
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading=f"Delete \u201c{note.subject or '(no title)'}\u201d?",
+            body="This note will be permanently deleted.",
+        )
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("delete", "Delete")
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self._on_delete_note_response, note)
+        dialog.present()
+
+    def _on_delete_note_response(self, _dialog, response_id: str, note: Note) -> None:
+        if response_id != "delete":
+            return
+        self._do_delete_note(note)
+
+    def _do_delete_note(self, note: Note) -> None:
+        if self._audit_log:
+            self._audit_log.record("delete", note.id, note.subject)
+        self._db.delete_note(note.id)
         child = self._note_list.get_first_child()
         while child:
-            if isinstance(child, NoteRow) and child.note.id == note_id:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
                 self._note_list.remove(child)
                 break
             child = child.get_next_sibling()
-        self._current_note = None
-        self._editor.clear()
-        self._editor.set_editable(False)
-        self._delete_btn.set_sensitive(False)
-        self._editor_stack.set_visible_child_name("empty")
+        if self._current_note and self._current_note.id == note.id:
+            self._current_note = None
+            self._editor.clear()
+            self._editor.set_editable(False)
+            self._editor_stack.set_visible_child_name("empty")
         self._update_empty_state()
         if self._sync_engine:
             from .imap_backend import CmdType, _Cmd
@@ -722,6 +880,22 @@ class MainWindow(Adw.ApplicationWindow):
     # Save icon
     # ------------------------------------------------------------------
 
+    def _ensure_note_in_list(self, note) -> None:
+        """Add note to the list if it isn't already there (used for All Notes view)."""
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
+                return  # already present — _refresh_note_row handled it
+            child = child.get_next_sibling()
+        folder_names = {f.id: f.name for f in self._db.get_folders()}
+        new_row = NoteRow(note, folder_name=folder_names.get(note.folder_id, ""),
+                          on_delete=self._on_delete_note_requested)
+        self._note_list.handler_block(self._note_selected_id)
+        self._note_list.prepend(new_row)
+        self._note_list.select_row(new_row)
+        self._note_list.handler_unblock(self._note_selected_id)
+        self._update_empty_state()
+
     def _select_first_note(self) -> None:
         """Select and load the first note row, or show the empty editor state."""
         first = self._note_list.get_first_child()
@@ -730,7 +904,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._current_note = first.note
             self._editor.load_note(first.note)
             self._editor.set_editable(True)
-            self._delete_btn.set_sensitive(True)
             self._editor_stack.set_visible_child_name("editor")
         else:
             self._editor.clear()
@@ -817,7 +990,6 @@ class MainWindow(Adw.ApplicationWindow):
                         self._current_note = None
                         self._editor.clear()
                         self._editor.set_editable(False)
-                        self._delete_btn.set_sensitive(False)
                         self._editor_stack.set_visible_child_name("empty")
                     self._update_empty_state()
                     break
@@ -832,6 +1004,54 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
     # Other handlers
     # ------------------------------------------------------------------
+
+    def _on_error_btn_clicked(self, _btn) -> None:
+        log_text = self._audit_log.format_text() if self._audit_log else "(no audit log)"
+
+        dialog = Adw.MessageDialog(
+            transient_for=self,
+            heading="Sync Errors",
+            body="One or more notes failed to sync with IMAP. See the log below.",
+        )
+
+        # Scrollable log view
+        buf = Gtk.TextBuffer()
+        buf.set_text(log_text)
+        tv = Gtk.TextView(buffer=buf)
+        tv.set_editable(False)
+        tv.set_monospace(True)
+        tv.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        tv.set_margin_start(8)
+        tv.set_margin_end(8)
+        tv.set_margin_top(8)
+        tv.set_margin_bottom(8)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(180)
+        scroll.set_min_content_width(480)
+        scroll.set_child(tv)
+
+        frame = Gtk.Frame()
+        frame.set_child(scroll)
+        frame.set_margin_top(8)
+        dialog.set_extra_child(frame)
+
+        dialog.add_response("close", "Close")
+        dialog.add_response("copy", "Copy Log")
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+
+        def _on_response(dlg, response_id):
+            if response_id == "copy":
+                clipboard = Gdk.Display.get_default().get_clipboard()
+                clipboard.set(log_text)
+                self._show_toast("Log copied to clipboard")
+            # Hide the error button if there are no remaining errors
+            if self._audit_log and not self._audit_log.has_errors():
+                self._error_btn.set_visible(False)
+
+        dialog.connect("response", _on_response)
+        dialog.present()
 
     def _on_sync_now(self, _action, _param) -> None:
         if self._sync_engine:
@@ -865,6 +1085,21 @@ class MainWindow(Adw.ApplicationWindow):
 
         elif event.type == SyncEventType.SYNC_ERROR:
             self._show_toast(f"Sync error: {event.error}")
+            self._error_btn.set_visible(True)
+
+        elif event.type == SyncEventType.SYNC_CONFLICT:
+            data = event.data if isinstance(event.data, dict) else {}
+            n = data.get("count", event.data or 1)
+            notes = data.get("notes", [])
+            msg = f"{n} note{'s' if n != 1 else ''} had conflicts — local edits kept"
+            self._show_toast(msg)
+            if self._audit_log:
+                for note_id, subject in notes:
+                    self._audit_log.mark_conflict(
+                        note_id, subject,
+                        "Remote change skipped — local edit will be pushed on next sync"
+                    )
+            self._error_btn.set_visible(True)
 
         elif event.type == SyncEventType.AUTH_REQUIRED:
             self._show_add_account_dialog()

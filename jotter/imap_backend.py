@@ -9,6 +9,7 @@ import email.utils
 import logging
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum, auto
@@ -19,7 +20,9 @@ logger = logging.getLogger(__name__)
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 NOTES_FOLDER_CANDIDATES = ["Notes", "[Gmail]/Notes"]
-SYNC_INTERVAL = 60  # seconds
+SYNC_INTERVAL = 30          # fallback polling interval when IDLE unavailable (seconds)
+IDLE_REFRESH_SECS = 29 * 60 # RFC 2177: re-issue IDLE every 29 min to avoid server cutoff
+RECONNECT_DELAY = 20        # seconds to wait before reconnecting after a connection error
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +74,17 @@ class ImapSyncEngine(threading.Thread):
         db,                          # models.Database instance
         get_credentials_cb: Callable,  # () -> ImapCredentials | None
         event_cb: Callable[[SyncEvent], None],
+        audit_log=None,              # audit_log.AuditLog | None
     ):
         super().__init__(daemon=True, name="imap-sync")
         self._db = db
         self._get_creds = get_credentials_cb
         self._event_cb = event_cb
+        self._audit = audit_log
         self.cmd_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
+        self._idle_folder: Optional[str] = None  # set after first _run_folders
+        self._idle_mode: Optional[bool] = None   # True=IDLE, False=polling, None=unknown
 
     # ------------------------------------------------------------------
     # Thread entry point
@@ -86,19 +93,17 @@ class ImapSyncEngine(threading.Thread):
     def run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                self._sync_cycle()
+                self._persistent_sync_loop()
             except Exception as exc:
-                logger.exception("Sync cycle failed")
-                self._emit(SyncEventType.SYNC_ERROR, error=str(exc))
-
-            # Wait for next cycle or a command
-            try:
-                cmd = self.cmd_queue.get(timeout=SYNC_INTERVAL)
-                if cmd.type == CmdType.STOP:
-                    break
-                # SYNC_NOW or NOTE_SAVED → fall through to next iteration
-            except queue.Empty:
-                pass  # timeout → run another cycle
+                logger.exception("Sync connection lost: %s", exc)
+                self._emit(SyncEventType.DISCONNECTED)
+                # Wait before reconnecting; wake early on STOP or SYNC_NOW
+                try:
+                    cmd = self.cmd_queue.get(timeout=RECONNECT_DELAY)
+                    if cmd.type == CmdType.STOP:
+                        return
+                except queue.Empty:
+                    pass
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -124,18 +129,21 @@ class ImapSyncEngine(threading.Thread):
     # Core sync logic
     # ------------------------------------------------------------------
 
-    def _sync_cycle(self) -> None:
-        creds = self._get_creds()
-        if creds is None:
-            self._emit(SyncEventType.AUTH_REQUIRED)
-            return
-
+    def _persistent_sync_loop(self) -> None:
+        """Connect once; sync in a loop with IMAP IDLE between cycles."""
         try:
             import imapclient
             import imapclient.exceptions as _imap_exc
         except ImportError:
             logger.error("imapclient not installed")
             self._emit(SyncEventType.SYNC_ERROR, error="imapclient not installed")
+            time.sleep(RECONNECT_DELAY)
+            return
+
+        creds = self._get_creds()
+        if creds is None:
+            self._emit(SyncEventType.AUTH_REQUIRED)
+            time.sleep(RECONNECT_DELAY)
             return
 
         email_addr = creds.email
@@ -143,23 +151,103 @@ class ImapSyncEngine(threading.Thread):
             self._db.set_meta("email", email_addr)
 
         try:
-            with imapclient.IMAPClient(IMAP_HOST, port=IMAP_PORT, ssl=True) as client:
-                client.oauth2_login(email_addr, creds.access_token)
-                self._emit(SyncEventType.CONNECTED)
-                self._run_folders(client, email_addr)
-        except _imap_exc.LoginError:
-            # GOA always refreshes via call_get_access_token_sync; a LoginError here
-            # means the account itself needs re-authorisation, not just a token refresh.
-            logger.warning("IMAP login failed — account may need re-authorisation")
-            self._emit(SyncEventType.AUTH_REQUIRED)
-            return
+            client = imapclient.IMAPClient(IMAP_HOST, port=IMAP_PORT, ssl=True)
+        except Exception as exc:
+            raise RuntimeError(f"IMAP connect failed: {exc}") from exc
 
-        self._emit(SyncEventType.SYNC_COMPLETE)
+        try:
+            try:
+                client.oauth2_login(email_addr, creds.access_token)
+            except _imap_exc.LoginError:
+                logger.warning("IMAP login failed — account may need re-authorisation")
+                self._emit(SyncEventType.AUTH_REQUIRED)
+                return
+
+            self._emit(SyncEventType.CONNECTED)
+            self._idle_mode = None  # re-announce mode after each reconnect
+
+            while not self._stop_event.is_set():
+                self._run_folders(client, email_addr)
+                self._emit(SyncEventType.SYNC_COMPLETE)
+
+                # Drain any commands that arrived while syncing
+                try:
+                    while True:
+                        cmd = self.cmd_queue.get_nowait()
+                        if cmd.type == CmdType.STOP:
+                            return
+                except queue.Empty:
+                    pass
+
+                # Block until the server signals a change, a command arrives,
+                # or the fallback polling interval elapses.
+                if not self._wait_for_changes(client):
+                    return  # STOP received
+
+        finally:
+            try:
+                client.logout()
+            except Exception:
+                pass
+            self._emit(SyncEventType.DISCONNECTED)
+
+    def _wait_for_changes(self, client) -> bool:
+        """IDLE on the primary Notes folder; return False if STOP received."""
+        if not self._idle_folder:
+            # No folder known yet — plain sleep
+            try:
+                cmd = self.cmd_queue.get(timeout=SYNC_INTERVAL)
+                return cmd.type != CmdType.STOP
+            except queue.Empty:
+                return True
+
+        try:
+            client.select_folder(self._idle_folder, readonly=True)
+            client.idle()
+            if self._idle_mode is not True:
+                self._idle_mode = True
+                logger.info("IMAP IDLE active on %s — changes will sync in real time",
+                            self._idle_folder)
+
+            deadline = time.monotonic() + IDLE_REFRESH_SECS
+            while time.monotonic() < deadline and not self._stop_event.is_set():
+                responses = client.idle_check(timeout=5)
+                if responses:
+                    logger.debug("IDLE woke on server notification: %s", responses)
+                    client.idle_done()
+                    return True
+                try:
+                    cmd = self.cmd_queue.get_nowait()
+                    client.idle_done()
+                    return cmd.type != CmdType.STOP
+                except queue.Empty:
+                    pass
+
+            # Refresh IDLE before the 30-minute server cutoff
+            client.idle_done()
+            return not self._stop_event.is_set()
+
+        except Exception as exc:
+            if self._idle_mode is not False:
+                self._idle_mode = False
+                logger.info("IMAP IDLE not available (%s) — polling every %ds",
+                            exc, SYNC_INTERVAL)
+            # Fall back to polling
+            try:
+                cmd = self.cmd_queue.get(timeout=SYNC_INTERVAL)
+                return cmd.type != CmdType.STOP
+            except queue.Empty:
+                return True
 
     def _run_folders(self, client, email_addr: str) -> None:
         notes_folders = self._get_notes_folders(client)
         logger.info("Syncing %d Notes folder(s): %s", len(notes_folders),
                     [n for _, n in notes_folders])
+
+        # Root Notes folder is last in the list; IDLE on it to catch all changes
+        # (Gmail label inheritance means root folder sees messages from all subfolders).
+        if notes_folders:
+            self._idle_folder = notes_folders[-1][0]
 
         for imap_name, display_name in notes_folders:
             folder = self._db.ensure_folder(display_name, imap_name)
@@ -230,14 +318,42 @@ class ImapSyncEngine(threading.Thread):
         new_uids = remote_uids - known_uids
         changed = False
         n_conflicts = 0
+        conflict_notes: list = []
 
         if new_uids:
             fetched = client.fetch(list(new_uids), ["RFC822", "ENVELOPE", "INTERNALDATE"])
+
+            # Deduplicate by apple_uuid: if multiple new messages share the same UUID
+            # (us + Apple Notes both pushed versions), keep only the highest UID and
+            # collect the rest as stale duplicates to delete.
+            uuid_to_highest_uid: dict[str, int] = {}
             for uid, data in fetched.items():
                 raw = data.get(b"RFC822") or data.get(b"BODY[]")
                 if not raw:
                     continue
                 note = self._parse_message(raw, uid, folder.id)
+                if note.apple_uuid:
+                    prev = uuid_to_highest_uid.get(note.apple_uuid)
+                    if prev is None or uid > prev:
+                        uuid_to_highest_uid[note.apple_uuid] = uid
+
+            stale_uids: list[int] = []
+
+            for uid, data in sorted(fetched.items()):
+                raw = data.get(b"RFC822") or data.get(b"BODY[]")
+                if not raw:
+                    continue
+                note = self._parse_message(raw, uid, folder.id)
+
+                # If this uuid has a newer sibling in the same batch, it's a stale
+                # duplicate — delete it rather than processing it.
+                if note.apple_uuid and uuid_to_highest_uid.get(note.apple_uuid, uid) != uid:
+                    stale_uids.append(uid)
+                    logger.info(
+                        "Stale duplicate UID %s (apple_uuid=%s) — will delete in favour of UID %s",
+                        uid, note.apple_uuid, uuid_to_highest_uid[note.apple_uuid],
+                    )
+                    continue
 
                 # Before saving, check for conflict or deleted-revival by apple_uuid.
                 # This is the stable identifier Apple Notes keeps across all edits.
@@ -250,20 +366,111 @@ class ImapSyncEngine(threading.Thread):
                             # revive the note.
                             self._db.update_imap_uid(local.id, uid)
                             continue
-                        if local.is_dirty:
-                            # Local has unsaved edits that would be overwritten by the
-                            # remote version. Skip; _push will upload the local version
-                            # and win the conflict with a new UID.
-                            n_conflicts += 1
-                            logger.info(
-                                "Sync conflict on note %s (%r) — keeping local edits",
-                                local.id, local.subject,
-                            )
+
+                        # Apple Notes uses the current wall-clock time as the Date: header
+                        # when it re-pushes from iCloud, so timestamp comparison alone is
+                        # unreliable.  A content match is the definitive signal that Apple
+                        # is echoing our own version back.
+                        #
+                        # Two sub-cases:
+                        #   (a) Our canonical UID is still alive in remote_uids — Apple
+                        #       added a redundant copy.  Delete Apple's echo.
+                        #   (b) Our canonical UID is gone — Apple replaced our message.
+                        #       Accept Apple's UID as the new canonical one so the
+                        #       vanished-UID pass doesn't mark the note as deleted.
+                        remote_text = note.body_text.strip()
+                        remote_subj = note.subject.strip()
+                        local_text  = local.body_text.strip()
+                        local_subj  = local.subject.strip()
+                        if remote_text == local_text and remote_subj == local_subj:
+                            our_uid_alive = local.imap_uid and local.imap_uid in remote_uids
+                            if our_uid_alive:
+                                stale_uids.append(uid)
+                                logger.info(
+                                    "Echo detected: remote UID %s matches note %s %r "
+                                    "— deleting stale copy (our UID %s still alive)",
+                                    uid, local.id, local.subject, local.imap_uid,
+                                )
+                            else:
+                                self._db.update_imap_uid(local.id, uid)
+                                logger.info(
+                                    "Echo detected: remote UID %s matches note %s %r "
+                                    "— accepting as replacement (our UID %s gone)",
+                                    uid, local.id, local.subject, local.imap_uid,
+                                )
                             continue
 
+                        # Also fall back to the timestamp check (catches echoes where
+                        # Apple sends the original note content with an old Date header).
+                        remote_mtime = note.modified_at or ""
+                        local_synced = local.synced_at or ""
+                        if local_synced and remote_mtime and remote_mtime <= local_synced:
+                            our_uid_alive = local.imap_uid and local.imap_uid in remote_uids
+                            if our_uid_alive:
+                                stale_uids.append(uid)
+                                logger.info(
+                                    "Stale Apple re-push: UID %s mtime=%s <= synced_at=%s "
+                                    "(note %s %r) — deleting",
+                                    uid, remote_mtime, local_synced, local.id, local.subject,
+                                )
+                            else:
+                                self._db.update_imap_uid(local.id, uid)
+                                logger.info(
+                                    "Stale re-push UID %s accepted as replacement for "
+                                    "note %s %r (our UID %s gone)",
+                                    uid, local.id, local.subject, local.imap_uid,
+                                )
+                            continue
+
+                        if local.is_dirty:
+                            # Local has unsaved edits that would be overwritten by the
+                            # remote version. Point imap_uid at the conflicting remote UID
+                            # so _push deletes it when uploading the local version.
+                            if local.imap_uid != uid:
+                                self._db.update_imap_uid(local.id, uid)
+                            n_conflicts += 1
+                            conflict_notes.append((local.id, local.subject))
+                            logger.info(
+                                "Sync conflict on note %s (%r) — keeping local edits, "
+                                "will delete remote UID %s on push",
+                                local.id, local.subject, uid,
+                            )
+                            continue
+                        # Local is clean — if our current imap_uid is already higher
+                        # than this UID the remote message is a stale older copy.
+                        if local.imap_uid and local.imap_uid > uid:
+                            if local.imap_uid in remote_uids:
+                                stale_uids.append(uid)
+                                logger.info(
+                                    "Skipping stale remote UID %s for note %s "
+                                    "(local already at UID %s)",
+                                    uid, local.id, local.imap_uid,
+                                )
+                            else:
+                                self._db.update_imap_uid(local.id, uid)
+                                logger.info(
+                                    "Accepting UID %s for note %s (our higher UID %s is gone)",
+                                    uid, local.id, local.imap_uid,
+                                )
+                            continue
+
+                # Mark the note as synced at pull time so saving it doesn't
+                # clear synced_at and immediately make it dirty again.
+                from datetime import datetime, timezone as _tz
+                note.synced_at = datetime.now(_tz.utc).isoformat()
                 result = self._db.save_note(note)
                 if result.id:
                     changed = True
+
+            # Clean up stale duplicates from IMAP so they don't resurface next cycle.
+            if stale_uids:
+                try:
+                    client.delete_messages(stale_uids)
+                    client.expunge()
+                    logger.info("Deleted %d stale duplicate UID(s) in %s: %s",
+                                len(stale_uids), folder_name, stale_uids)
+                except Exception as exc:
+                    logger.warning("Could not delete stale duplicates %s: %s", stale_uids, exc)
 
         # Detect remotely deleted notes.  Two cases:
         #   Normal sync: UIDs we had before are no longer on the server.
@@ -290,7 +497,8 @@ class ImapSyncEngine(threading.Thread):
                 changed = True
 
         if n_conflicts:
-            self._emit(SyncEventType.SYNC_CONFLICT, data=n_conflicts)
+            self._emit(SyncEventType.SYNC_CONFLICT,
+                       data={"count": n_conflicts, "notes": conflict_notes})
 
         if changed:
             self._emit(SyncEventType.NOTES_UPDATED, data=folder.id)
@@ -337,12 +545,22 @@ class ImapSyncEngine(threading.Thread):
             folder_status = client.folder_status(folder_name, [b"UIDNEXT"])
             uidnext = folder_status.get(b"UIDNEXT", 1)
 
-            client.append(
-                folder_name,
-                msg_bytes,
-                flags=["\\Seen"],
-                msg_time=_parse_dt(note.modified_at),
-            )
+            try:
+                client.append(
+                    folder_name,
+                    msg_bytes,
+                    flags=["\\Seen"],
+                    msg_time=_parse_dt(note.modified_at),
+                )
+            except Exception as exc:
+                err = (f"IMAP APPEND failed: {exc}  "
+                       f"[note_id={note.id} folder={folder_name!r} "
+                       f"apple_uuid={note.apple_uuid}]")
+                logger.error(err)
+                if self._audit:
+                    self._audit.mark_error(note.id, err)
+                self._emit(SyncEventType.SYNC_ERROR, error=err)
+                continue
 
             # Search UIDs >= uidnext, optionally filtered by our tracking header.
             # Fall back to the raw UID range if the server doesn't support HEADER search.
@@ -354,23 +572,63 @@ class ImapSyncEngine(threading.Thread):
                 candidates = client.search(["UID", f"{uidnext}:*"])
             new_uid = candidates[-1] if candidates else None
 
-            if new_uid:
-                # Delete the old IMAP message if it existed
-                if note.imap_uid and note.imap_uid != new_uid:
-                    try:
-                        client.delete_messages([note.imap_uid])
-                        client.expunge()
-                    except Exception as exc:
-                        logger.warning("Could not delete old UID %s: %s", note.imap_uid, exc)
+            if not new_uid:
+                err = (f"Note not found in IMAP after upload  "
+                       f"[note_id={note.id} subject={note.subject!r} "
+                       f"folder={folder_name!r} uidnext={uidnext} "
+                       f"apple_uuid={note.apple_uuid}]")
+                logger.error(err)
+                if self._audit:
+                    self._audit.mark_error(note.id, err)
+                self._emit(SyncEventType.SYNC_ERROR, error=err)
+                continue
 
-                # Retrieve the Message-ID from the freshly appended message
+            # Delete the old IMAP message if it existed
+            if note.imap_uid and note.imap_uid != new_uid:
+                try:
+                    client.delete_messages([note.imap_uid])
+                    client.expunge()
+                except Exception as exc:
+                    logger.warning("Could not delete old UID %s: %s", note.imap_uid, exc)
+
+            # Retrieve the Message-ID and verify subject from the freshly appended message
+            try:
                 fetched = client.fetch([new_uid], ["ENVELOPE"])
                 envelope = fetched.get(new_uid, {}).get(b"ENVELOPE")
-                msg_id = ""
-                if envelope and envelope.message_id:
-                    msg_id = envelope.message_id.decode(errors="replace")
+            except Exception as exc:
+                err = (f"Verification fetch failed: {exc}  "
+                       f"[note_id={note.id} new_uid={new_uid} "
+                       f"folder={folder_name!r} apple_uuid={note.apple_uuid}]")
+                logger.error(err)
+                if self._audit:
+                    self._audit.mark_error(note.id, err)
+                self._emit(SyncEventType.SYNC_ERROR, error=err)
+                continue
 
-                self._db.mark_synced(note.id, new_uid, msg_id, apple_uuid=note.apple_uuid)
+            if not envelope:
+                err = (f"No envelope at UID {new_uid} after upload  "
+                       f"[note_id={note.id} subject={note.subject!r} "
+                       f"folder={folder_name!r} apple_uuid={note.apple_uuid}]")
+                logger.error(err)
+                if self._audit:
+                    self._audit.mark_error(note.id, err)
+                self._emit(SyncEventType.SYNC_ERROR, error=err)
+                continue
+
+            msg_id = ""
+            if envelope.message_id:
+                msg_id = envelope.message_id.decode(errors="replace")
+
+            self._db.mark_synced(note.id, new_uid, msg_id, apple_uuid=note.apple_uuid)
+            logger.debug("Pushed note %s → UID %s (folder=%s)", note.id, new_uid, folder_name)
+            if self._audit:
+                self._audit.mark_ok(
+                    note.id,
+                    imap_uid=new_uid,
+                    apple_uuid=note.apple_uuid,
+                    message_id=msg_id or None,
+                    folder=folder_name,
+                )
 
         self._emit(SyncEventType.NOTES_UPDATED, data=folder.id)
 

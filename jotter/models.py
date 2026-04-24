@@ -406,6 +406,19 @@ class Database:
             conn.commit()
         return cursor.rowcount
 
+    def get_note_count(self, folder_id: int) -> int:
+        row = self._conn().execute(
+            "SELECT COUNT(*) FROM notes WHERE folder_id=? AND deleted=0",
+            (folder_id,),
+        ).fetchone()
+        return row[0]
+
+    def delete_folder(self, folder_id: int) -> None:
+        with self._lock:
+            conn = self._conn()
+            conn.execute("DELETE FROM folders WHERE id=?", (folder_id,))
+            conn.commit()
+
     # ------------------------------------------------------------------
     # Meta
     # ------------------------------------------------------------------

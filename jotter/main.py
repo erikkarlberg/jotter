@@ -33,14 +33,17 @@ class JotterApp(Adw.Application):
         self.connect("shutdown", self._on_shutdown)
 
     def _on_activate(self, app: "JotterApp") -> None:
+        from .audit_log import AuditLog
         from .models import Database
         from .window import MainWindow
 
         self._db = Database(_DB_PATH)
-        sync_engine, source = self._build_sync_engine()
+        audit_log = AuditLog(_DB_PATH.parent / "audit.log")
+        sync_engine, source = self._build_sync_engine(audit_log)
         self._sync_engine = sync_engine
 
-        self._window = MainWindow(app, self._db, sync_engine, auth_source=source)
+        self._window = MainWindow(app, self._db, sync_engine, auth_source=source,
+                                  audit_log=audit_log)
         self._window.present()
 
         if sync_engine:
@@ -51,7 +54,7 @@ class JotterApp(Adw.Application):
     # Credential resolution: GOA → client_secrets.json → offline
     # ------------------------------------------------------------------
 
-    def _build_sync_engine(self):
+    def _build_sync_engine(self, audit_log=None):
         """
         Return (ImapSyncEngine | None, source_label).
         source_label is one of: 'goa', 'client_secrets', 'none'.
@@ -65,13 +68,14 @@ class JotterApp(Adw.Application):
         goa_creds_cb = self._make_goa_creds_cb()
         if goa_creds_cb is not None:
             logger.info("Using GNOME Online Accounts for Gmail sync")
-            engine = ImapSyncEngine(self._db, goa_creds_cb, _noop_event_cb)
+            engine = ImapSyncEngine(self._db, goa_creds_cb, _noop_event_cb, audit_log=audit_log)
             return engine, "goa"
 
         # 2. Fallback: client_secrets.json + SecretService token cache
         if _CLIENT_SECRETS.exists():
             logger.info("Using client_secrets.json OAuth2 flow for Gmail sync")
-            engine = ImapSyncEngine(self._db, self._make_client_secrets_creds_cb(), _noop_event_cb)
+            engine = ImapSyncEngine(self._db, self._make_client_secrets_creds_cb(),
+                                    _noop_event_cb, audit_log=audit_log)
             return engine, "client_secrets"
 
         # 3. Offline — no credentials at all

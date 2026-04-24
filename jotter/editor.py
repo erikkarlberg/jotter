@@ -194,6 +194,7 @@ class EditorWidget(Gtk.Box):
 
     def _on_cursor_moved(self, *_) -> None:
         """Update toolbar button state to reflect tags at cursor."""
+        prev = self._updating_buffer
         self._updating_buffer = True
         try:
             it = self._buffer.get_iter_at_mark(self._buffer.get_insert())
@@ -207,7 +208,7 @@ class EditorWidget(Gtk.Box):
                     active = check.has_tag(tag)
                     btn.set_active(active)
         finally:
-            self._updating_buffer = False
+            self._updating_buffer = prev
 
     # ------------------------------------------------------------------
     # Auto-save
