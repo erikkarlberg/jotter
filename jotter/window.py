@@ -51,6 +51,7 @@ class FolderRow(Gtk.ListBoxRow):
         folder: Folder,
         on_note_dropped: Optional[Callable] = None,
         on_delete: Optional[Callable] = None,
+        depth: int = 0,
     ):
         super().__init__()
         self.folder = folder
@@ -59,15 +60,19 @@ class FolderRow(Gtk.ListBoxRow):
         self._hovering = False
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        box.set_margin_start(12)
+        # Indent sub-folders: 12px base + 16px per depth level
+        box.set_margin_start(12 + depth * 16)
         box.set_margin_end(4)
         box.set_margin_top(8)
         box.set_margin_bottom(8)
 
-        icon = Gtk.Image.new_from_icon_name("folder-symbolic")
+        icon_name = "folder-symbolic" if depth == 0 else "folder-open-symbolic"
+        icon = Gtk.Image.new_from_icon_name(icon_name)
         icon.set_pixel_size(16)
 
-        label = Gtk.Label(label=folder.name)
+        # Show only the leaf component of the folder name
+        leaf_name = folder.name.rsplit("/", 1)[-1] if "/" in folder.name else folder.name
+        label = Gtk.Label(label=leaf_name)
         label.set_halign(Gtk.Align.START)
         label.set_hexpand(True)
         label.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
@@ -300,6 +305,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._current_note: Optional[Note] = None
         self._all_notes_mode: bool = False
         self._last_action: str = "init"
+        self._sort_by: str = "modified"
+        self._distraction_free: bool = False
 
         # Save icon auto-hide timeout
         self._save_icon_timeout_id: Optional[int] = None
@@ -435,6 +442,12 @@ class MainWindow(Adw.ApplicationWindow):
         search_btn.set_tooltip_text("Search (Ctrl+F)")
         self._mid_header.pack_end(search_btn)
 
+        sort_btn = Gtk.MenuButton()
+        sort_btn.set_icon_name("view-sort-ascending-symbolic")
+        sort_btn.set_tooltip_text("Sort notes")
+        sort_btn.set_menu_model(self._build_sort_menu())
+        self._mid_header.pack_end(sort_btn)
+
         mid_toolbar.add_top_bar(self._mid_header)
 
         self._search_bar = Gtk.SearchBar()
@@ -535,6 +548,14 @@ class MainWindow(Adw.ApplicationWindow):
             Gtk.ShortcutTrigger.parse_string("<Control>f"),
             Gtk.CallbackAction.new(lambda *_: self._toggle_search() or True),
         ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("F11"),
+            Gtk.CallbackAction.new(lambda *_: self._toggle_distraction_free() or True),
+        ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>p"),
+            Gtk.CallbackAction.new(lambda *_: self._show_jump_to() or True),
+        ))
         self.add_controller(ctrl)
 
     def _build_note_menu(self):
@@ -547,6 +568,27 @@ class MainWindow(Adw.ApplicationWindow):
         self.add_action(sync_action)
 
         return menu
+
+    def _build_sort_menu(self):
+        from gi.repository import Gio
+        menu = Gio.Menu()
+        menu.append("Date modified", "win.sort::modified")
+        menu.append("Date created", "win.sort::created")
+        menu.append("Title A–Z", "win.sort::title_asc")
+        menu.append("Title Z–A", "win.sort::title_desc")
+
+        sort_action = Gio.SimpleAction.new_stateful(
+            "sort", GLib.VariantType.new("s"), GLib.Variant.new_string("modified")
+        )
+        sort_action.connect("activate", self._on_sort_changed)
+        self.add_action(sort_action)
+        return menu
+
+    def _on_sort_changed(self, action, param) -> None:
+        self._sort_by = param.get_string()
+        action.set_state(param)
+        self._db.set_meta("sort_by", self._sort_by)
+        self._reload_current_notes()
 
     # ------------------------------------------------------------------
     # Data loading
@@ -571,8 +613,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         target_folder_row = None
         for folder in folders:
+            depth = folder.name.count("/")
             row = FolderRow(folder, on_note_dropped=self._move_note_to_folder,
-                            on_delete=self._on_delete_folder_requested)
+                            on_delete=self._on_delete_folder_requested, depth=depth)
             self._folder_list.append(row)
             if folder.id == current_folder_id:
                 target_folder_row = row
@@ -598,7 +641,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._discard_empty_note()
         while row := self._note_list.get_first_child():
             self._note_list.remove(row)
-        for note in self._db.get_notes(folder.id, search):
+        for note in self._db.get_notes(folder.id, search, sort_by=self._sort_by):
             self._note_list.append(NoteRow(note, on_delete=self._on_delete_note_requested))
         self._update_empty_state(search)
         self._select_first_note()
@@ -609,11 +652,18 @@ class MainWindow(Adw.ApplicationWindow):
         while row := self._note_list.get_first_child():
             self._note_list.remove(row)
         folder_names = {f.id: f.name for f in self._db.get_folders()}
-        for note in self._db.get_all_notes(search):
+        for note in self._db.get_all_notes(search, sort_by=self._sort_by):
             self._note_list.append(NoteRow(note, folder_name=folder_names.get(note.folder_id, ""),
                                            on_delete=self._on_delete_note_requested))
         self._update_empty_state(search)
         self._select_first_note()
+
+    def _reload_current_notes(self) -> None:
+        search = self._search_entry.get_text().strip()
+        if self._all_notes_mode:
+            self._load_notes_all(search)
+        elif self._current_folder is not None:
+            self._load_notes(self._current_folder, search)
 
     def _sync_note_list(self) -> None:
         """Update note list after sync, adding/removing rows without a full rebuild."""
@@ -682,7 +732,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._last_action = "sync_note_list:done"
         self._update_empty_state()
 
-        if self._current_note and self._current_note.id not in new_ids:
+        if self._current_note and self._current_note.id not in new_by_id:
             logger.debug("_sync_note_list: current note %s deleted remotely → clearing",
                          self._current_note.id)
             self._editor.clear()
@@ -1069,6 +1119,120 @@ class MainWindow(Adw.ApplicationWindow):
         bar = self._search_bar
         bar.set_search_mode_enabled(not bar.get_search_mode_enabled())
 
+    def _toggle_distraction_free(self) -> None:
+        self._distraction_free = not self._distraction_free
+        if self._distraction_free:
+            self._outer_split.set_show_sidebar(False)
+            self._inner_split.set_show_sidebar(False)
+        else:
+            self._outer_split.set_show_sidebar(True)
+            self._inner_split.set_show_sidebar(True)
+
+    def _show_jump_to(self) -> None:
+        """Ctrl+P command palette: fuzzy-search notes by title."""
+        dialog = Adw.Dialog()
+        dialog.set_title("Jump to Note")
+        dialog.set_content_width(480)
+        dialog.set_content_height(400)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+        box.append(header)
+
+        entry = Gtk.SearchEntry()
+        entry.set_placeholder_text("Search notes…")
+        entry.set_margin_start(12)
+        entry.set_margin_end(12)
+        entry.set_margin_top(8)
+        entry.set_margin_bottom(8)
+        box.append(entry)
+
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        list_box.add_css_class("boxed-list-separate")
+        list_box.set_margin_start(8)
+        list_box.set_margin_end(8)
+        list_box.set_margin_bottom(8)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.set_child(list_box)
+        box.append(scroll)
+
+        dialog.set_child(box)
+
+        all_notes = self._db.get_all_notes()
+
+        def _populate(query: str = "") -> None:
+            while child := list_box.get_first_child():
+                list_box.remove(child)
+            q = query.lower()
+            for note in all_notes:
+                if q and q not in (note.subject or "").lower() and q not in (note.body_text or "").lower():
+                    continue
+                row = Gtk.ListBoxRow()
+                lbl = Gtk.Label(label=note.subject or "(no title)")
+                lbl.set_halign(Gtk.Align.START)
+                lbl.set_margin_start(12)
+                lbl.set_margin_end(12)
+                lbl.set_margin_top(8)
+                lbl.set_margin_bottom(8)
+                lbl.set_ellipsize(3)
+                row._note = note
+                row.set_child(lbl)
+                list_box.append(row)
+
+        _populate()
+        entry.connect("search-changed", lambda e: _populate(e.get_text()))
+
+        def _on_row_activated(lb, row) -> None:
+            note = row._note
+            dialog.close()
+            self._navigate_to_note(note)
+
+        list_box.connect("row-activated", _on_row_activated)
+        entry.connect("activate", lambda _: (
+            _on_row_activated(list_box, list_box.get_selected_row())
+            if list_box.get_selected_row() else None
+        ))
+
+        dialog.present(self)
+        entry.grab_focus()
+
+    def _navigate_to_note(self, note) -> None:
+        """Select a note in the list, switching folder if needed."""
+        folder = self._db.get_folders()
+        folder_map = {f.id: f for f in folder}
+        target_folder = folder_map.get(note.folder_id)
+        if target_folder is None:
+            return
+
+        # Switch to the note's folder
+        self._all_notes_mode = False
+        self._current_folder = target_folder
+        self._folder_title.set_title(target_folder.name)
+
+        # Select the folder row
+        child = self._folder_list.get_first_child()
+        while child:
+            if isinstance(child, FolderRow) and child.folder.id == target_folder.id:
+                self._folder_list.handler_block(self._folder_selected_id)
+                self._folder_list.select_row(child)
+                self._folder_list.handler_unblock(self._folder_selected_id)
+                break
+            child = child.get_next_sibling()
+
+        self._load_notes(target_folder)
+        # Select the note row
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
+                self._note_list.select_row(child)
+                break
+            child = child.get_next_sibling()
+
     # ------------------------------------------------------------------
     # Sync events
     # ------------------------------------------------------------------
@@ -1146,6 +1310,9 @@ class MainWindow(Adw.ApplicationWindow):
                 self.set_default_size(int(w), int(h))
             except ValueError:
                 pass
+        saved_sort = self._db.get_meta("sort_by")
+        if saved_sort in ("modified", "created", "title_asc", "title_desc"):
+            self._sort_by = saved_sort
 
     def _save_window_state(self) -> None:
         alloc = self.get_default_size()

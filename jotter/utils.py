@@ -288,3 +288,109 @@ def strip_html(html: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = "\n".join(line.strip() for line in text.splitlines())
     return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# HTML → Markdown
+# ---------------------------------------------------------------------------
+
+def html_to_markdown(html: str) -> str:
+    """Convert Jotter HTML (Apple Notes format) to Markdown."""
+    if not html:
+        return ""
+
+    # Strip outer <html><head>...</head><body ...> wrappers if present
+    html = re.sub(r"(?i)<html[^>]*>.*?<body[^>]*>", "", html, flags=re.DOTALL)
+    html = re.sub(r"(?i)</body>.*?</html>", "", html, flags=re.DOTALL)
+
+    lines = []
+    # Split on div boundaries
+    div_content = re.findall(r"<div[^>]*>(.*?)</div>", html, re.DOTALL | re.IGNORECASE)
+    if not div_content:
+        # Fallback: treat as plain text block
+        return strip_html(html)
+
+    for chunk in div_content:
+        chunk = chunk.strip()
+        if chunk in ("", "<br>", "<br/>", "<br />"):
+            lines.append("")
+            continue
+
+        # Heading blocks
+        m = re.match(r"(?i)<h([123])>(.*?)</h\1>", chunk, re.DOTALL)
+        if m:
+            level, content = int(m.group(1)), m.group(2)
+            lines.append("#" * level + " " + _md_inline(content))
+            continue
+
+        lines.append(_md_inline(chunk))
+
+    return "\n".join(lines).strip()
+
+
+def _md_inline(html: str) -> str:
+    """Convert inline HTML formatting to Markdown."""
+    # Bold
+    html = re.sub(r"(?i)<b>(.*?)</b>", lambda m: f"**{m.group(1)}**", html, flags=re.DOTALL)
+    html = re.sub(r"(?i)<strong>(.*?)</strong>", lambda m: f"**{m.group(1)}**", html, flags=re.DOTALL)
+    # Italic
+    html = re.sub(r"(?i)<i>(.*?)</i>", lambda m: f"*{m.group(1)}*", html, flags=re.DOTALL)
+    html = re.sub(r"(?i)<em>(.*?)</em>", lambda m: f"*{m.group(1)}*", html, flags=re.DOTALL)
+    # Strikethrough
+    html = re.sub(r"(?i)<s>(.*?)</s>", lambda m: f"~~{m.group(1)}~~", html, flags=re.DOTALL)
+    html = re.sub(r"(?i)<del>(.*?)</del>", lambda m: f"~~{m.group(1)}~~", html, flags=re.DOTALL)
+    # Underline (no standard Markdown — use HTML)
+    html = re.sub(r"(?i)<u>(.*?)</u>", lambda m: f"<u>{m.group(1)}</u>", html, flags=re.DOTALL)
+    # Monospace
+    html = re.sub(r"(?i)<(?:code|tt)>(.*?)</(?:code|tt)>", lambda m: f"`{m.group(1)}`", html, flags=re.DOTALL)
+    # Strip remaining tags
+    html = _TAG_RE.sub("", html)
+    # Decode HTML entities
+    html = html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    return html.strip()
+
+
+# ---------------------------------------------------------------------------
+# Markdown → HTML
+# ---------------------------------------------------------------------------
+
+def markdown_to_html(md: str) -> str:
+    """Convert Markdown to Jotter/Apple Notes HTML format."""
+    if not md:
+        return ""
+
+    lines = md.splitlines()
+    result = []
+    for line in lines:
+        if not line.strip():
+            result.append("<div><br></div>")
+            continue
+
+        # Headings
+        m = re.match(r"^(#{1,3})\s+(.*)", line)
+        if m:
+            level = len(m.group(1))
+            content = _html_inline(m.group(2))
+            result.append(f"<div><h{level}>{content}</h{level}></div>")
+            continue
+
+        result.append(f"<div>{_html_inline(line)}</div>")
+
+    return "".join(result)
+
+
+def _html_inline(text: str) -> str:
+    """Convert inline Markdown to HTML."""
+    import html as _html_mod
+    text = _html_mod.escape(text, quote=False)
+    # Bold (before italic to handle ***)
+    text = re.sub(r"\*\*(.+?)\*\*", lambda m: f"<b>{m.group(1)}</b>", text)
+    # Italic
+    text = re.sub(r"\*(.+?)\*", lambda m: f"<i>{m.group(1)}</i>", text)
+    # Strikethrough
+    text = re.sub(r"~~(.+?)~~", lambda m: f"<s>{m.group(1)}</s>", text)
+    # Underline <u>
+    text = re.sub(r"<u>(.+?)</u>", lambda m: f"<u>{m.group(1)}</u>", text)
+    # Code
+    text = re.sub(r"`(.+?)`", lambda m: f"<code>{m.group(1)}</code>", text)
+    return text
