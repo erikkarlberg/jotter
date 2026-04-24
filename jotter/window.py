@@ -498,14 +498,29 @@ class MainWindow(Adw.ApplicationWindow):
         edit_toolbar = Adw.ToolbarView()
         self._edit_header = Adw.HeaderBar()
 
-        # Save icon (clock) — hidden until a local save occurs
+        # Title widget: save icon + sync status box
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title_box.set_halign(Gtk.Align.CENTER)
+
         self._save_icon = Gtk.Image.new_from_icon_name("clock-symbolic")
         self._save_icon.set_pixel_size(16)
         self._save_icon.add_css_class("dim-label")
         self._save_icon.set_visible(False)
-        self._edit_header.set_title_widget(self._save_icon)
 
-        # ⋮ menu (Sync Now)
+        self._sync_spinner = Gtk.Spinner()
+        self._sync_spinner.set_size_request(16, 16)
+        self._sync_spinner.set_visible(False)
+
+        self._sync_status_icon = Gtk.Image()
+        self._sync_status_icon.set_pixel_size(16)
+        self._sync_status_icon.set_visible(False)
+
+        title_box.append(self._save_icon)
+        title_box.append(self._sync_spinner)
+        title_box.append(self._sync_status_icon)
+        self._edit_header.set_title_widget(title_box)
+
+        # ⋮ menu (Sync Now + Export/Import)
         menu_model = self._build_note_menu()
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("view-more-symbolic")
@@ -1317,18 +1332,37 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------------
 
     def _on_sync_event(self, event: SyncEvent) -> None:
-        if event.type == SyncEventType.NOTES_UPDATED:
+        if event.type == SyncEventType.SYNC_STARTED:
+            self._sync_spinner.set_visible(True)
+            self._sync_spinner.start()
+            self._sync_status_icon.set_visible(False)
+
+        elif event.type == SyncEventType.NOTES_UPDATED:
             logger.debug("sync event NOTES_UPDATED folder=%s", event.data)
             if self._all_notes_mode or (self._current_folder and event.data == self._current_folder.id):
                 self._sync_note_list()
 
         elif event.type == SyncEventType.SYNC_COMPLETE:
             logger.debug("sync event SYNC_COMPLETE")
+            self._sync_spinner.stop()
+            self._sync_spinner.set_visible(False)
+            self._sync_status_icon.set_from_icon_name("emblem-ok-symbolic")
+            self._sync_status_icon.add_css_class("success")
+            self._sync_status_icon.set_tooltip_text("Synced")
+            self._sync_status_icon.set_visible(True)
+            GLib.timeout_add(3000, self._hide_sync_status_icon)
             self._load_folders()
 
         elif event.type == SyncEventType.SYNC_ERROR:
-            self._show_toast(f"Sync error: {event.error}")
+            self._sync_spinner.stop()
+            self._sync_spinner.set_visible(False)
+            self._sync_status_icon.set_from_icon_name("dialog-warning-symbolic")
+            self._sync_status_icon.remove_css_class("success")
+            self._sync_status_icon.add_css_class("error")
+            self._sync_status_icon.set_tooltip_text(f"Sync error: {event.error}")
+            self._sync_status_icon.set_visible(True)
             self._error_btn.set_visible(True)
+            self._send_desktop_notification("Jotter sync error", event.error or "Failed to sync")
 
         elif event.type == SyncEventType.SYNC_CONFLICT:
             data = event.data if isinstance(event.data, dict) else {}
@@ -1344,10 +1378,39 @@ class MainWindow(Adw.ApplicationWindow):
                     )
             self._error_btn.set_visible(True)
 
+        elif event.type == SyncEventType.CONNECTED:
+            self._sync_status_icon.set_from_icon_name("network-wireless-symbolic")
+            self._sync_status_icon.remove_css_class("error")
+            self._sync_status_icon.set_tooltip_text("Connected")
+
+        elif event.type == SyncEventType.DISCONNECTED:
+            self._sync_spinner.stop()
+            self._sync_spinner.set_visible(False)
+            self._sync_status_icon.set_from_icon_name("network-offline-symbolic")
+            self._sync_status_icon.remove_css_class("success")
+            self._sync_status_icon.set_tooltip_text("Offline")
+            self._sync_status_icon.set_visible(True)
+
         elif event.type == SyncEventType.AUTH_REQUIRED:
             self._show_add_account_dialog()
 
         return GLib.SOURCE_REMOVE
+
+    def _hide_sync_status_icon(self) -> bool:
+        self._sync_status_icon.set_visible(False)
+        return GLib.SOURCE_REMOVE
+
+    def _send_desktop_notification(self, title: str, body: str) -> None:
+        try:
+            from gi.repository import Gio
+            notification = Gio.Notification.new(title)
+            notification.set_body(body)
+            notification.set_priority(Gio.NotificationPriority.HIGH)
+            app = self.get_application()
+            if app:
+                app.send_notification("jotter-sync-error", notification)
+        except Exception as exc:
+            logger.debug("Desktop notification failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers
