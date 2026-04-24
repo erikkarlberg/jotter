@@ -561,11 +561,39 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_note_menu(self):
         from gi.repository import Gio
         menu = Gio.Menu()
-        menu.append("Sync Now", "win.sync-now")
 
-        sync_action = Gio.SimpleAction.new("sync-now", None)
-        sync_action.connect("activate", self._on_sync_now)
-        self.add_action(sync_action)
+        export_section = Gio.Menu()
+        export_section.append("Export as Markdown…", "win.export-md")
+        export_section.append("Export as Plain Text…", "win.export-txt")
+        export_section.append("Export as HTML…", "win.export-html")
+        export_section.append("Export as PDF…", "win.export-pdf")
+        menu.append_section("Export", export_section)
+
+        import_section = Gio.Menu()
+        import_section.append("Import Markdown…", "win.import-md")
+        import_section.append("Import Text File…", "win.import-txt")
+        import_section.append("Export Folder as Zip…", "win.export-folder-zip")
+        import_section.append("Export All Notes…", "win.export-all")
+        menu.append_section("Import / Batch", import_section)
+
+        sync_section = Gio.Menu()
+        sync_section.append("Sync Now", "win.sync-now")
+        menu.append_section(None, sync_section)
+
+        for name, cb in [
+            ("sync-now", self._on_sync_now),
+            ("export-md", self._on_export_md),
+            ("export-txt", self._on_export_txt),
+            ("export-html", self._on_export_html),
+            ("export-pdf", self._on_export_pdf),
+            ("import-md", self._on_import_md),
+            ("import-txt", self._on_import_txt),
+            ("export-folder-zip", self._on_export_folder_zip),
+            ("export-all", self._on_export_all),
+        ]:
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", cb)
+            self.add_action(action)
 
         return menu
 
@@ -1107,6 +1135,57 @@ class MainWindow(Adw.ApplicationWindow):
         if self._sync_engine:
             self._sync_engine.request_full_sync()
             self._show_toast("Reloading from IMAP…")
+
+    # ------------------------------------------------------------------
+    # Export / Import handlers
+    # ------------------------------------------------------------------
+
+    def _on_export_md(self, _action, _param) -> None:
+        if self._current_note:
+            from .export import export_note_markdown
+            export_note_markdown(self._current_note, self)
+
+    def _on_export_txt(self, _action, _param) -> None:
+        if self._current_note:
+            from .export import export_note_text
+            export_note_text(self._current_note, self)
+
+    def _on_export_html(self, _action, _param) -> None:
+        if self._current_note:
+            from .export import export_note_html
+            export_note_html(self._current_note, self)
+
+    def _on_export_pdf(self, _action, _param) -> None:
+        if self._current_note:
+            from .export import export_note_pdf
+            export_note_pdf(self._current_note, self)
+
+    def _on_import_md(self, _action, _param) -> None:
+        folder_id = self._current_folder.id if self._current_folder else self._db.get_folders()[0].id
+        from .export import import_note_markdown
+        import_note_markdown(self._db, folder_id, self, self._on_note_imported)
+
+    def _on_import_txt(self, _action, _param) -> None:
+        folder_id = self._current_folder.id if self._current_folder else self._db.get_folders()[0].id
+        from .export import import_note_text
+        import_note_text(self._db, folder_id, self, self._on_note_imported)
+
+    def _on_export_folder_zip(self, _action, _param) -> None:
+        if self._current_folder:
+            from .export import export_folder_zip
+            export_folder_zip(self._db, self._current_folder.id,
+                              self._current_folder.name, self)
+
+    def _on_export_all(self, _action, _param) -> None:
+        from .export import export_all_zip
+        export_all_zip(self._db, self)
+
+    def _on_note_imported(self, note) -> None:
+        """Called after a successful import — show the new note."""
+        self._sync_note_list()
+        if self._sync_engine:
+            from .imap_backend import CmdType, _Cmd
+            self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
 
     def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
         query = entry.get_text().strip()
