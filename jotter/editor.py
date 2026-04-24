@@ -41,11 +41,19 @@ class EditorWidget(Gtk.Box):
         self._note: Optional[Note] = None
         self._autosave_id: Optional[int] = None
         self._updating_buffer = False
+        self._find_tag: Optional[Gtk.TextTag] = None
 
         # --- TextBuffer + tags ---
         self._tag_table = Gtk.TextTagTable()
         setup_tags(self._tag_table)
         self._buffer = Gtk.TextBuffer(tag_table=self._tag_table)
+        self._buffer.set_enable_undo(True)
+
+        # Search-highlight tag
+        self._find_tag = Gtk.TextTag.new("find-highlight")
+        self._find_tag.set_property("background", "#ffee00")
+        self._find_tag.set_property("foreground", "#000000")
+        self._tag_table.add(self._find_tag)
 
         # --- TextView ---
         self._view = Gtk.TextView(buffer=self._buffer)
@@ -63,7 +71,11 @@ class EditorWidget(Gtk.Box):
         # --- Formatting toolbar ---
         toolbar = self._build_toolbar()
 
+        # --- Find & Replace bar ---
+        self._find_bar = self._build_find_bar()
+
         self.append(toolbar)
+        self.append(self._find_bar)
         self.append(scroll)
 
         # --- Signals ---
@@ -83,6 +95,23 @@ class EditorWidget(Gtk.Box):
                 Gtk.CallbackAction.new(lambda *_, t=tag: self._toggle_tag(t)),
             )
             ctrl.add_shortcut(shortcut)
+
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>h"),
+            Gtk.CallbackAction.new(lambda *_: self._toggle_find_bar() or True),
+        ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control>z"),
+            Gtk.CallbackAction.new(lambda *_: self._buffer.undo() or True),
+        ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("<Control><Shift>z"),
+            Gtk.CallbackAction.new(lambda *_: self._buffer.redo() or True),
+        ))
+        ctrl.add_shortcut(Gtk.Shortcut.new(
+            Gtk.ShortcutTrigger.parse_string("Escape"),
+            Gtk.CallbackAction.new(lambda *_: self._hide_find_bar() or True),
+        ))
         self._view.add_controller(ctrl)
 
     # ------------------------------------------------------------------
@@ -95,12 +124,16 @@ class EditorWidget(Gtk.Box):
         self._cancel_autosave()
         self._note = note
         self._updating_buffer = True
+        # Wrap the load in begin/end_irreversible_action so switching notes
+        # doesn't pollute the undo stack with the previous note's content.
+        self._buffer.begin_irreversible_action()
         try:
             if note.body_html:
                 html_to_buffer(note.body_html, self._buffer)
             else:
                 self._buffer.set_text(note.body_text or "")
         finally:
+            self._buffer.end_irreversible_action()
             self._updating_buffer = False
         self._view.grab_focus()
 
@@ -110,7 +143,9 @@ class EditorWidget(Gtk.Box):
         self._cancel_autosave()
         self._note = None
         self._updating_buffer = True
+        self._buffer.begin_irreversible_action()
         self._buffer.set_text("")
+        self._buffer.end_irreversible_action()
         self._updating_buffer = False
         # Keep the view sensitive so it can still be scrolled; editable=False is enough
         self._view.set_editable(False)
@@ -168,6 +203,136 @@ class EditorWidget(Gtk.Box):
         bar.set_center_widget(inline_box)
 
         return bar
+
+    # ------------------------------------------------------------------
+    # Find & Replace bar
+    # ------------------------------------------------------------------
+
+    def _build_find_bar(self) -> Gtk.Revealer:
+        revealer = Gtk.Revealer()
+        revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        revealer.set_reveal_child(False)
+
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        bar.set_margin_start(8)
+        bar.set_margin_end(8)
+        bar.set_margin_top(4)
+        bar.set_margin_bottom(4)
+
+        self._find_entry = Gtk.SearchEntry()
+        self._find_entry.set_placeholder_text("Find…")
+        self._find_entry.set_hexpand(True)
+        self._find_entry.connect("search-changed", self._on_find_changed)
+        self._find_entry.connect("activate", self._find_next)
+
+        self._replace_entry = Gtk.Entry()
+        self._replace_entry.set_placeholder_text("Replace…")
+        self._replace_entry.set_hexpand(True)
+
+        find_next_btn = Gtk.Button(label="Next")
+        find_next_btn.connect("clicked", self._find_next)
+
+        replace_btn = Gtk.Button(label="Replace")
+        replace_btn.connect("clicked", self._replace_current)
+
+        replace_all_btn = Gtk.Button(label="All")
+        replace_all_btn.connect("clicked", self._replace_all)
+
+        close_btn = Gtk.Button()
+        close_btn.set_icon_name("window-close-symbolic")
+        close_btn.add_css_class("flat")
+        close_btn.connect("clicked", lambda _: self._hide_find_bar())
+
+        bar.append(self._find_entry)
+        bar.append(find_next_btn)
+        bar.append(self._replace_entry)
+        bar.append(replace_btn)
+        bar.append(replace_all_btn)
+        bar.append(close_btn)
+
+        revealer.set_child(bar)
+        self._find_revealer = revealer
+        return revealer
+
+    def _toggle_find_bar(self) -> None:
+        visible = self._find_revealer.get_reveal_child()
+        if visible:
+            self._hide_find_bar()
+        else:
+            self._find_revealer.set_reveal_child(True)
+            self._find_entry.grab_focus()
+
+    def _hide_find_bar(self) -> None:
+        self._find_revealer.set_reveal_child(False)
+        self._clear_find_highlights()
+        self._view.grab_focus()
+
+    def _on_find_changed(self, entry: Gtk.SearchEntry) -> None:
+        self._clear_find_highlights()
+        query = entry.get_text()
+        if not query:
+            return
+        start = self._buffer.get_start_iter()
+        while True:
+            found = start.forward_search(query, 0, None)
+            if not found:
+                break
+            match_start, match_end = found
+            self._buffer.apply_tag(self._find_tag, match_start, match_end)
+            start = match_end
+
+    def _find_next(self, *_) -> None:
+        query = self._find_entry.get_text()
+        if not query:
+            return
+        cursor = self._buffer.get_iter_at_mark(self._buffer.get_insert())
+        found = cursor.forward_search(query, 0, None)
+        if not found:
+            # Wrap around
+            found = self._buffer.get_start_iter().forward_search(query, 0, None)
+        if found:
+            match_start, match_end = found
+            self._buffer.select_range(match_start, match_end)
+            self._view.scroll_to_mark(self._buffer.get_insert(), 0.1, False, 0, 0)
+
+    def _replace_current(self, *_) -> None:
+        query = self._find_entry.get_text()
+        replacement = self._replace_entry.get_text()
+        if not query:
+            return
+        bounds = self._buffer.get_selection_bounds()
+        if bounds:
+            sel_start, sel_end = bounds
+            selected = self._buffer.get_text(sel_start, sel_end, False)
+            if selected == query:
+                self._buffer.delete(sel_start, sel_end)
+                self._buffer.insert(sel_start, replacement)
+        self._find_next()
+
+    def _replace_all(self, *_) -> None:
+        query = self._find_entry.get_text()
+        replacement = self._replace_entry.get_text()
+        if not query:
+            return
+        self._clear_find_highlights()
+        start = self._buffer.get_start_iter()
+        count = 0
+        while True:
+            found = start.forward_search(query, 0, None)
+            if not found:
+                break
+            match_start, match_end = found
+            self._buffer.delete(match_start, match_end)
+            self._buffer.insert(match_start, replacement)
+            start = self._buffer.get_iter_at_offset(match_start.get_offset() + len(replacement))
+            count += 1
+        if count:
+            self._on_find_changed(self._find_entry)
+
+    def _clear_find_highlights(self) -> None:
+        start = self._buffer.get_start_iter()
+        end = self._buffer.get_end_iter()
+        self._buffer.remove_tag(self._find_tag, start, end)
 
     # ------------------------------------------------------------------
     # Formatting helpers
