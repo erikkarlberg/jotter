@@ -60,57 +60,48 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ---
 
-## 5. Preferences & Personalisation
+## 5. Backup & Safety
 
-- 5.1 [ ] **Preferences dialog** — `Adw.PreferencesWindow` covering: default font, font size, autosave interval, sync interval, keyboard shortcuts reference.
-- 5.2 [ ] **Font size control** — zoom in/out in the editor (Ctrl+= / Ctrl+-).
-- 5.3 [ ] **Dark/light/auto theme** — explicit toggle in preferences (currently follows system; make it overridable).
-- 5.4 [ ] **Editor line spacing and width** — configurable max content width for comfortable long-form writing.
-
----
-
-## 6. Backup & Safety
-
-- 6.1 [ ] **Automatic local backups** — periodically snapshot the SQLite database to `~/.local/share/jotter/backups/` (rolling, keep last 7).
-- 6.2 [ ] **Export all notes on demand** — one-click "backup everything" to a zip of Markdown files.
-- 6.3 [ ] **Trash / recently deleted** — soft-deleted notes go to a "Trash" pseudo-folder and are permanently removed after 30 days (matching Apple Notes behaviour).
+- 5.1 [ ] **Automatic local backups** — periodically snapshot the SQLite database to `~/.local/share/jotter/backups/` (rolling, keep last 7).
+- 5.2 [ ] **Export all notes on demand** — one-click "backup everything" to a zip of Markdown files.
+- 5.3 [ ] **Trash / recently deleted** — soft-deleted notes go to a "Trash" pseudo-folder and are permanently removed after 30 days (matching Apple Notes behaviour).
 
 ---
 
-## 7. Onboarding & Setup
+## 6. Onboarding & Setup
 
-- 7.1 [ ] **Welcome screen** — shown on first launch before any account is connected; explains what Jotter is and how to connect an account.
-- 7.2 [ ] **Setup wizard** — step-by-step Adw dialog for connecting a Google account (GOA) or entering IMAP credentials manually.
-- 7.3 [ ] **Empty-state illustrations** — meaningful placeholder content when a folder has no notes or search returns no results.
-
----
-
-## 8. Accessibility & Polish
-
-- 8.1 [ ] **Full keyboard navigation** — every action reachable without a mouse; focus ring visible on all interactive elements.
-- 8.2 [ ] **Screen-reader labels** — `accessible-label` / `accessible-description` on all custom widgets.
-- 8.3 [ ] **High-contrast support** — test under GNOME's high-contrast theme and fix any hard-coded colours.
-- 8.4 [ ] **RTL language support** — ensure the three-column layout mirrors correctly for Arabic, Hebrew, etc.
-- 8.5 [ ] **Responsive layout review** — test and polish the single-column (mobile/small-window) layout.
+- 6.1 [ ] **Welcome screen** — shown on first launch before any account is connected; explains what Jotter is and how to connect an account.
+- 6.2 [ ] **Setup wizard** — step-by-step Adw dialog for connecting a Google account (GOA) or entering IMAP credentials manually.
+- 6.3 [ ] **Empty-state illustrations** — meaningful placeholder content when a folder has no notes or search returns no results.
 
 ---
 
-## 9. Packaging & Distribution
+## 7. Accessibility & Polish
 
-- 9.1 [ ] **Flatpak manifest** — `com.example.Jotter.json` with the correct GNOME runtime, permissions (`--share=network`, `--talk-name=org.gnome.OnlineAccounts`), and finish-args.
-- 9.2 [ ] **Flathub submission** — meet Flathub quality requirements (metadata, screenshots, appstream XML).
-- 9.3 [ ] **`.desktop` file** — proper `StartupNotify=true`, `Categories`, and `Keywords`.
-- 9.4 [ ] **AppStream / metainfo XML** — release notes, screenshots, developer name, OARS rating.
-- 9.5 [ ] **GNOME Shell search provider** — register Jotter so notes are surfaced directly in the Activities search.
-- 9.6 [ ] **Autostart / background sync** — optional D-Bus activation so the sync daemon can run without the window open.
+- 7.1 [ ] **Full keyboard navigation** — every action reachable without a mouse; focus ring visible on all interactive elements.
+- 7.2 [ ] **Screen-reader labels** — `accessible-label` / `accessible-description` on all custom widgets.
+- 7.3 [ ] **High-contrast support** — test under GNOME's high-contrast theme and fix any hard-coded colours.
+- 7.4 [ ] **RTL language support** — ensure the three-column layout mirrors correctly for Arabic, Hebrew, etc.
+- 7.5 [ ] **Responsive layout review** — test and polish the single-column (mobile/small-window) layout.
 
 ---
 
-## 10. Code Quality & Testing
+## 8. Packaging & Distribution
 
-- 10.1 [ ] **Automated unit tests** — pytest suite for `models.py` (DB CRUD), `utils.py` (HTML↔TextBuffer round-trips), and `auth.py` (token refresh logic).
-- 10.2 [ ] **Integration tests** — mock IMAP server (e.g. `IMAPStub`) to test the full sync loop without a live Gmail account.
-- 10.3 [ ] **CI pipeline** — GitHub Actions workflow: lint (`ruff`), type-check (`mypy`), run tests, build Flatpak on every PR.
-- 10.4 [ ] **Type annotations** — add `mypy`-clean type hints throughout; especially `window.py` and `imap_backend.py`.
-- 10.5 [ ] **Refactor `window.py`** — at 1160+ lines it handles too much; split into sub-controllers for the sidebar, note list, and header bar.
-- 10.6 [ ] **Logging cleanup** — replace bare `print()` calls with structured `logging` at appropriate levels; make log verbosity configurable.
+- 8.1 [ ] **Flatpak manifest** — `com.example.Jotter.json` with the correct GNOME runtime, permissions (`--share=network`, `--talk-name=org.gnome.OnlineAccounts`), and finish-args.
+- 8.2 [ ] **Flathub submission** — meet Flathub quality requirements (metadata, screenshots, appstream XML).
+- 8.3 [ ] **`.desktop` file** — proper `StartupNotify=true`, `Categories`, and `Keywords`.
+- 8.4 [ ] **AppStream / metainfo XML** — release notes, screenshots, developer name, OARS rating.
+- 8.5 [ ] **GNOME Shell search provider** — register Jotter so notes are surfaced directly in the Activities search.
+- 8.6 [ ] **Autostart / background sync** — optional D-Bus activation so the sync daemon can run without the window open.
+
+---
+
+## 9. Code Quality & Testing
+
+- 9.1 [ ] **Automated unit tests** — pytest suite for `models.py` (DB CRUD), `utils.py` (HTML↔TextBuffer round-trips), and `auth.py` (token refresh logic).
+- 9.2 [ ] **Integration tests** — mock IMAP server (e.g. `IMAPStub`) to test the full sync loop without a live Gmail account.
+- 9.3 [ ] **CI pipeline** — GitHub Actions workflow: lint (`ruff`), type-check (`mypy`), run tests, build Flatpak on every PR.
+- 9.4 [ ] **Type annotations** — add `mypy`-clean type hints throughout; especially `window.py` and `imap_backend.py`.
+- 9.5 [ ] **Refactor `window.py`** — at 1160+ lines it handles too much; split into sub-controllers for the sidebar, note list, and header bar.
+- 9.6 [ ] **Logging cleanup** — replace bare `print()` calls with structured `logging` at appropriate levels; make log verbosity configurable.
