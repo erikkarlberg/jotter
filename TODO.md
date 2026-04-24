@@ -49,10 +49,8 @@ A prioritised task list for taking Jotter from its current state to a polished, 
 
 ---
 
-## 3. Sync & Accounts
+## 3. Sync
 
-- [ ] **Multiple account support** — add, remove, and switch between several Gmail/iCloud accounts, each with its own sync thread and folder tree.
-- [ ] **iCloud-direct sync** — support Apple's iCloud Drive / CloudKit API as an alternative to the Gmail IMAP bridge (removes the Gmail requirement).
 - [ ] **Sync status indicator** — show a spinner/icon in the header that distinguishes: idle, syncing, error, offline.
 - [ ] **Manual sync button** — force a full pull+push from the toolbar (useful when offline for a while).
 - [ ] **Selective folder sync** — let the user choose which IMAP folders are synced vs. local-only.
