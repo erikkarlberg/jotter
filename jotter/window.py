@@ -375,6 +375,8 @@ class MainWindow(Adw.ApplicationWindow):
         if sync_engine:
             sync_engine._event_cb = self._on_sync_event
 
+        GLib.idle_add(self._maybe_show_welcome)
+
     # ------------------------------------------------------------------
     # UI Construction
     # ------------------------------------------------------------------
@@ -530,9 +532,9 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Empty state shown when no note is selected
         self._editor_empty = Adw.StatusPage()
-        self._editor_empty.set_icon_name("document-new-symbolic")
-        self._editor_empty.set_title("Create your first note")
-        self._editor_empty.set_description("Write something you want to remember")
+        self._editor_empty.set_icon_name("accessories-text-editor-symbolic")
+        self._editor_empty.set_title("No Note Selected")
+        self._editor_empty.set_description("Select a note from the list or create a new one")
         _create_btn = Gtk.Button(label="New Note")
         _create_btn.set_halign(Gtk.Align.CENTER)
         _create_btn.add_css_class("pill")
@@ -1563,6 +1565,70 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.set_response_appearance("open", Adw.ResponseAppearance.SUGGESTED)
         dialog.connect("response", lambda d, r: self._open_online_accounts_settings() if r == "open" else None)
         dialog.present()
+
+    def _maybe_show_welcome(self) -> bool:
+        if not self._db.get_meta("first_launch_done"):
+            self._show_welcome_dialog()
+        return GLib.SOURCE_REMOVE
+
+    def _show_welcome_dialog(self) -> None:
+        dialog = Adw.Dialog()
+        dialog.set_title("Welcome to Jotter")
+        dialog.set_content_width(480)
+        dialog.set_content_height(380)
+        dialog.set_can_close(False)
+
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_show_end_title_buttons(False)
+        toolbar_view.add_top_bar(header)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        box.set_margin_start(32)
+        box.set_margin_end(32)
+        box.set_margin_top(24)
+        box.set_margin_bottom(32)
+        box.set_vexpand(True)
+
+        status = Adw.StatusPage()
+        status.set_icon_name("accessories-text-editor-symbolic")
+        status.set_title("Welcome to Jotter")
+        status.set_description(
+            "Jotter keeps your notes in sync with Apple Notes via Gmail IMAP.\n"
+            "Add your Google account in GNOME Settings to enable sync, "
+            "or start writing notes offline."
+        )
+        status.set_vexpand(True)
+        box.append(status)
+
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        btn_box.set_halign(Gtk.Align.CENTER)
+
+        if self._auth_source == "none":
+            setup_btn = Gtk.Button(label="Add Google Account…")
+            setup_btn.add_css_class("pill")
+            setup_btn.add_css_class("suggested-action")
+            setup_btn.connect("clicked", lambda _: (
+                self._open_online_accounts_settings(),
+                self._db.set_meta("first_launch_done", "1"),
+                dialog.close(),
+            ))
+            btn_box.append(setup_btn)
+
+        offline_btn = Gtk.Button(label="Continue Offline")
+        offline_btn.add_css_class("pill")
+        if self._auth_source != "none":
+            offline_btn.add_css_class("suggested-action")
+        offline_btn.connect("clicked", lambda _: (
+            self._db.set_meta("first_launch_done", "1"),
+            dialog.close(),
+        ))
+        btn_box.append(offline_btn)
+
+        box.append(btn_box)
+        toolbar_view.set_content(box)
+        dialog.set_child(toolbar_view)
+        dialog.present(self)
 
     def _show_toast(self, message: str) -> None:
         toast = Adw.Toast(title=message)
