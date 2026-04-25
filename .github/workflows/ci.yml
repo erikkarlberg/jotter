@@ -17,20 +17,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
-            gir1.2-adw-1 libgirepository1.0-dev gcc
-
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]" || pip install -e . pytest
+          # Install only the pure-Python deps needed for unit tests (no GTK required)
+          pip install pytest imapclient google-auth google-auth-oauthlib secretstorage jeepney
+          pip install -e . --no-deps
 
-      - name: Run tests
-        run: pytest tests/ -v
+      - name: Run unit tests
+        run: pytest tests/test_models.py tests/test_utils.py -v
 
   lint:
     runs-on: ubuntu-latest

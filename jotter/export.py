@@ -72,7 +72,7 @@ def _open_dialog(parent, title: str, mime: str, on_open) -> None:
     dialog.open(parent, None, _cb)
 
 
-def Gio_ListStore(filter_) -> "Gio.ListStore":
+def Gio_ListStore(filter_):
     from gi.repository import Gio
     ls = Gio.ListStore.new(Gtk.FileFilter)
     ls.append(filter_)
