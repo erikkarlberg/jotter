@@ -162,14 +162,41 @@ class FolderRow(Gtk.ListBoxRow):
         return True
 
 
+class TrashRow(Gtk.ListBoxRow):
+    """Sidebar pseudo-folder row for Recently Deleted notes."""
+
+    def __init__(self):
+        super().__init__()
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+
+        icon = Gtk.Image.new_from_icon_name("user-trash-symbolic")
+        icon.set_pixel_size(16)
+
+        label = Gtk.Label(label="Recently Deleted")
+        label.set_halign(Gtk.Align.START)
+        label.set_hexpand(True)
+
+        box.append(icon)
+        box.append(label)
+        self.set_child(box)
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["Recently Deleted folder"])
+
+
 class NoteRow(Gtk.ListBoxRow):
     """A single row in the note list."""
 
-    def __init__(self, note: Note, folder_name: str = "", on_delete=None):
+    def __init__(self, note: Note, folder_name: str = "", on_delete=None,
+                 on_restore=None, on_purge=None):
         super().__init__()
         self.note = note
         self._folder_name = folder_name
         self._on_delete_cb = on_delete
+        self._on_restore_cb = on_restore
+        self._on_purge_cb = on_purge
         self._hovering = False
 
         # Outer row: content (hexpand) + ⋮ button
@@ -242,11 +269,27 @@ class NoteRow(Gtk.ListBoxRow):
         inner.set_margin_top(4)
         inner.set_margin_bottom(4)
 
-        del_btn = Gtk.Button(label="Delete note")
-        del_btn.add_css_class("flat")
-        del_btn.set_halign(Gtk.Align.FILL)
-        del_btn.connect("clicked", self._on_delete_clicked)
-        inner.append(del_btn)
+        if self._on_restore_cb:
+            restore_btn = Gtk.Button(label="Restore")
+            restore_btn.add_css_class("flat")
+            restore_btn.set_halign(Gtk.Align.FILL)
+            restore_btn.connect("clicked", self._on_restore_clicked)
+            inner.append(restore_btn)
+
+        if self._on_purge_cb:
+            purge_btn = Gtk.Button(label="Delete Permanently")
+            purge_btn.add_css_class("flat")
+            purge_btn.add_css_class("destructive-action")
+            purge_btn.set_halign(Gtk.Align.FILL)
+            purge_btn.connect("clicked", self._on_purge_clicked)
+            inner.append(purge_btn)
+
+        if not self._on_restore_cb and not self._on_purge_cb:
+            del_btn = Gtk.Button(label="Delete note")
+            del_btn.add_css_class("flat")
+            del_btn.set_halign(Gtk.Align.FILL)
+            del_btn.connect("clicked", self._on_delete_clicked)
+            inner.append(del_btn)
 
         popover = Gtk.Popover()
         popover.set_child(inner)
@@ -271,6 +314,16 @@ class NoteRow(Gtk.ListBoxRow):
         self._menu_btn.get_popover().popdown()
         if self._on_delete_cb:
             self._on_delete_cb(self.note)
+
+    def _on_restore_clicked(self, _btn) -> None:
+        self._menu_btn.get_popover().popdown()
+        if self._on_restore_cb:
+            self._on_restore_cb(self.note)
+
+    def _on_purge_clicked(self, _btn) -> None:
+        self._menu_btn.get_popover().popdown()
+        if self._on_purge_cb:
+            self._on_purge_cb(self.note)
 
     def _setup_drag(self) -> None:
         source = Gtk.DragSource.new()
@@ -307,6 +360,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._last_action: str = "init"
         self._sort_by: str = "modified"
         self._distraction_free: bool = False
+        self._trash_mode: bool = False
 
         # Save icon auto-hide timeout
         self._save_icon_timeout_id: Optional[int] = None
@@ -664,10 +718,17 @@ class MainWindow(Adw.ApplicationWindow):
                 target_folder_row = row
                 self._current_folder = folder
 
-        let_signal_fire = (target_folder_row is None and not self._all_notes_mode)
-        row_to_select = target_folder_row or all_notes_row
-        logger.debug("load_folders: current_folder_id=%s let_signal_fire=%s all_notes=%s",
-                     current_folder_id, let_signal_fire, self._all_notes_mode)
+        trash_row = TrashRow()
+        self._folder_list.append(trash_row)
+
+        if self._trash_mode:
+            row_to_select = trash_row
+            let_signal_fire = False
+        else:
+            let_signal_fire = (target_folder_row is None and not self._all_notes_mode)
+            row_to_select = target_folder_row or all_notes_row
+        logger.debug("load_folders: current_folder_id=%s let_signal_fire=%s all_notes=%s trash=%s",
+                     current_folder_id, let_signal_fire, self._all_notes_mode, self._trash_mode)
 
         if let_signal_fire:
             self._last_action = "load_folders:unblock+select(intentional)"
@@ -703,10 +764,55 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _reload_current_notes(self) -> None:
         search = self._search_entry.get_text().strip()
-        if self._all_notes_mode:
+        if self._trash_mode:
+            self._load_trash_notes()
+        elif self._all_notes_mode:
             self._load_notes_all(search)
         elif self._current_folder is not None:
             self._load_notes(self._current_folder, search)
+
+    def _load_trash_notes(self) -> None:
+        logger.debug("_load_trash_notes")
+        self._discard_empty_note()
+        while row := self._note_list.get_first_child():
+            self._note_list.remove(row)
+        for note in self._db.get_deleted_notes():
+            self._note_list.append(NoteRow(
+                note,
+                on_restore=self._on_trash_restore_note,
+                on_purge=self._on_trash_purge_note,
+            ))
+        self._update_empty_state()
+        # Show editor in read-only mode if a note is selected, otherwise show empty state
+        self._editor.clear()
+        self._editor.set_editable(False)
+        self._current_note = None
+        self._editor_stack.set_visible_child_name("empty")
+
+    def _on_trash_restore_note(self, note: Note) -> None:
+        self._db.restore_note(note.id)
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
+                self._note_list.remove(child)
+                break
+            child = child.get_next_sibling()
+        self._update_empty_state()
+        self._show_toast(f"“{note.subject or '(no title)'}” restored")
+        if self._sync_engine:
+            from .imap_backend import CmdType, _Cmd
+            self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
+
+    def _on_trash_purge_note(self, note: Note) -> None:
+        self._db.purge_note(note.id)
+        child = self._note_list.get_first_child()
+        while child:
+            if isinstance(child, NoteRow) and child.note.id == note.id:
+                self._note_list.remove(child)
+                break
+            child = child.get_next_sibling()
+        self._update_empty_state()
+        self._show_toast(f"“{note.subject or '(no title)'}” permanently deleted")
 
     def _sync_note_list(self) -> None:
         """Update note list after sync, adding/removing rows without a full rebuild."""
@@ -789,19 +895,29 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_folder_selected(self, list_box, row) -> None:
         logger.debug("_on_folder_selected: row=%s last_action=%s", type(row).__name__, self._last_action)
         if isinstance(row, AllNotesRow):
-            if self._all_notes_mode:
+            if self._all_notes_mode and not self._trash_mode:
                 return
             self._all_notes_mode = True
+            self._trash_mode = False
             self._current_folder = None
             self._folder_title.set_title("All Notes")
             self._load_notes_all()
         elif isinstance(row, FolderRow):
-            if not self._all_notes_mode and self._current_folder and self._current_folder.id == row.folder.id:
+            if not self._trash_mode and not self._all_notes_mode and self._current_folder and self._current_folder.id == row.folder.id:
                 return
             self._all_notes_mode = False
+            self._trash_mode = False
             self._current_folder = row.folder
             self._folder_title.set_title(row.folder.name)
             self._load_notes(row.folder)
+        elif isinstance(row, TrashRow):
+            if self._trash_mode:
+                return
+            self._all_notes_mode = False
+            self._trash_mode = True
+            self._current_folder = None
+            self._folder_title.set_title("Recently Deleted")
+            self._load_trash_notes()
         else:
             return
         if self._outer_split.get_collapsed():
@@ -812,10 +928,12 @@ class MainWindow(Adw.ApplicationWindow):
             return
         if self._current_note is not None and self._current_note.id == row.note.id:
             return
-        self._discard_empty_note()
+        if not self._trash_mode:
+            self._discard_empty_note()
         self._current_note = row.note
         self._editor.load_note(row.note)
-        self._editor.set_editable(True)
+        editable = not self._trash_mode
+        self._editor.set_editable(editable)
         self._editor_stack.set_visible_child_name("editor")
         if self._outer_split.get_collapsed():
             self._outer_split.set_show_sidebar(False)
@@ -853,6 +971,8 @@ class MainWindow(Adw.ApplicationWindow):
             row = row.get_next_sibling()
 
     def _on_new_note(self, _btn) -> None:
+        if self._trash_mode:
+            return
         if self._all_notes_mode:
             folders = self._db.get_folders()
             folder = (
@@ -934,7 +1054,7 @@ class MainWindow(Adw.ApplicationWindow):
         dialog = Adw.MessageDialog(
             transient_for=self,
             heading=f"Delete \u201c{note.subject or '(no title)'}\u201d?",
-            body="This note will be permanently deleted.",
+            body="This note will be moved to Recently Deleted.",
         )
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("delete", "Delete")
@@ -1026,7 +1146,10 @@ class MainWindow(Adw.ApplicationWindow):
         if has_notes:
             self._note_stack.set_visible_child_name("list")
         else:
-            self._empty_state.set_title("No Results" if search else "No Notes")
+            if self._trash_mode:
+                self._empty_state.set_title("No Deleted Notes")
+            else:
+                self._empty_state.set_title("No Results" if search else "No Notes")
             self._note_stack.set_visible_child_name("empty")
 
     def _show_save_icon(self) -> None:
@@ -1203,6 +1326,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._sync_engine.cmd_queue.put(_Cmd(CmdType.SYNC_NOW))
 
     def _on_search_changed(self, entry: Gtk.SearchEntry) -> None:
+        if self._trash_mode:
+            return
         query = entry.get_text().strip()
         if self._all_notes_mode:
             self._load_notes_all(query)
