@@ -41,6 +41,7 @@ class AllNotesRow(Gtk.ListBoxRow):
         box.append(icon)
         box.append(label)
         self.set_child(box)
+        self.update_property([Gtk.AccessibleProperty.LABEL], ["All Notes folder"])
 
 
 class FolderRow(Gtk.ListBoxRow):
@@ -83,6 +84,7 @@ class FolderRow(Gtk.ListBoxRow):
         box.append(label)
         box.append(self._menu_btn)
         self.set_child(box)
+        self.update_property([Gtk.AccessibleProperty.LABEL], [f"{leaf_name} folder"])
 
         if on_note_dropped:
             self._setup_drop_target()
@@ -226,6 +228,7 @@ class NoteRow(Gtk.ListBoxRow):
         self._content.set_margin_bottom(12)
 
         subject = self.note.subject or "(no title)"
+        self.update_property([Gtk.AccessibleProperty.LABEL], [subject])
         title = Gtk.Label(label=subject)
         title.set_halign(Gtk.Align.START)
         title.set_ellipsize(3)  # PANGO_ELLIPSIZE_END
@@ -426,12 +429,14 @@ class MainWindow(Adw.ApplicationWindow):
 
         new_folder_btn = Gtk.Button.new_from_icon_name("folder-new-symbolic")
         new_folder_btn.set_tooltip_text("New folder")
+        new_folder_btn.update_property([Gtk.AccessibleProperty.LABEL], ["New folder"])
         new_folder_btn.connect("clicked", self._on_new_folder)
         left_header.pack_end(new_folder_btn)
 
         if self._auth_source == "none":
             add_account_btn = Gtk.Button.new_from_icon_name("user-available-symbolic")
             add_account_btn.set_tooltip_text("Add Google Account in GNOME Settings")
+            add_account_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Add Google Account"])
             add_account_btn.connect("clicked", lambda _: self._open_online_accounts_settings())
             left_header.pack_start(add_account_btn)
 
@@ -481,6 +486,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._sidebar_btn = Gtk.ToggleButton()
         self._sidebar_btn.set_icon_name("sidebar-show-symbolic")
         self._sidebar_btn.set_tooltip_text("Show folders")
+        self._sidebar_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Show folders sidebar"])
         self._sidebar_btn.set_visible(False)
         self._outer_split.bind_property(
             "show-sidebar", self._sidebar_btn, "active",
@@ -490,17 +496,20 @@ class MainWindow(Adw.ApplicationWindow):
 
         new_note_btn = Gtk.Button.new_from_icon_name("document-new-symbolic")
         new_note_btn.set_tooltip_text("New note (Ctrl+N)")
+        new_note_btn.update_property([Gtk.AccessibleProperty.LABEL], ["New note"])
         new_note_btn.connect("clicked", self._on_new_note)
         self._mid_header.pack_end(new_note_btn)
 
         search_btn = Gtk.ToggleButton()
         search_btn.set_icon_name("system-search-symbolic")
         search_btn.set_tooltip_text("Search (Ctrl+F)")
+        search_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Search notes"])
         self._mid_header.pack_end(search_btn)
 
         sort_btn = Gtk.MenuButton()
         sort_btn.set_icon_name("view-sort-ascending-symbolic")
         sort_btn.set_tooltip_text("Sort notes")
+        sort_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Sort notes"])
         sort_btn.set_menu_model(self._build_sort_menu())
         self._mid_header.pack_end(sort_btn)
 
@@ -580,6 +589,8 @@ class MainWindow(Adw.ApplicationWindow):
         menu_model = self._build_note_menu()
         menu_btn = Gtk.MenuButton()
         menu_btn.set_icon_name("view-more-symbolic")
+        menu_btn.set_tooltip_text("More options")
+        menu_btn.update_property([Gtk.AccessibleProperty.LABEL], ["More options"])
         menu_btn.set_menu_model(menu_model)
         self._edit_header.pack_end(menu_btn)
 

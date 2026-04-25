@@ -185,17 +185,18 @@ class EditorWidget(Gtk.Box):
         inline_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         inline_box.add_css_class("linked")
 
-        for tag_name, label, tooltip in [
-            (TAG_BOLD, "<b>B</b>", "Bold (Ctrl+B)"),
-            (TAG_ITALIC, "<i>I</i>", "Italic (Ctrl+I)"),
-            (TAG_UNDERLINE, "<u>U</u>", "Underline (Ctrl+U)"),
-            (TAG_STRIKETHROUGH, "<s>S</s>", "Strikethrough"),
+        for tag_name, label, tooltip, a11y_label in [
+            (TAG_BOLD, "<b>B</b>", "Bold (Ctrl+B)", "Bold"),
+            (TAG_ITALIC, "<i>I</i>", "Italic (Ctrl+I)", "Italic"),
+            (TAG_UNDERLINE, "<u>U</u>", "Underline (Ctrl+U)", "Underline"),
+            (TAG_STRIKETHROUGH, "<s>S</s>", "Strikethrough", "Strikethrough"),
         ]:
             btn = Gtk.ToggleButton()
             lbl = Gtk.Label()
             lbl.set_markup(label)
             btn.set_child(lbl)
             btn.set_tooltip_text(tooltip)
+            btn.update_property([Gtk.AccessibleProperty.LABEL], [a11y_label])
             btn.connect("toggled", self._on_format_toggle, tag_name)
             inline_box.append(btn)
             self._fmt_buttons[tag_name] = btn
@@ -241,6 +242,8 @@ class EditorWidget(Gtk.Box):
         close_btn = Gtk.Button()
         close_btn.set_icon_name("window-close-symbolic")
         close_btn.add_css_class("flat")
+        close_btn.set_tooltip_text("Close find bar (Escape)")
+        close_btn.update_property([Gtk.AccessibleProperty.LABEL], ["Close find bar"])
         close_btn.connect("clicked", lambda _: self._hide_find_bar())
 
         bar.append(self._find_entry)
