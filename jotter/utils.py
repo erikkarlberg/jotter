@@ -339,12 +339,18 @@ def _md_inline(html: str) -> str:
     # Strikethrough
     html = re.sub(r"(?i)<s>(.*?)</s>", lambda m: f"~~{m.group(1)}~~", html, flags=re.DOTALL)
     html = re.sub(r"(?i)<del>(.*?)</del>", lambda m: f"~~{m.group(1)}~~", html, flags=re.DOTALL)
-    # Underline (no standard Markdown — use HTML)
-    html = re.sub(r"(?i)<u>(.*?)</u>", lambda m: f"<u>{m.group(1)}</u>", html, flags=re.DOTALL)
+    # Underline (no standard Markdown — preserve as HTML using placeholders so
+    # the _TAG_RE pass below doesn't strip the re-emitted <u> tags)
+    _U_OPEN = "\x00UOPEN\x00"
+    _U_CLOSE = "\x00UCLOSE\x00"
+    html = re.sub(r"(?i)<u>(.*?)</u>",
+                  lambda m: f"{_U_OPEN}{m.group(1)}{_U_CLOSE}", html, flags=re.DOTALL)
     # Monospace
     html = re.sub(r"(?i)<(?:code|tt)>(.*?)</(?:code|tt)>", lambda m: f"`{m.group(1)}`", html, flags=re.DOTALL)
     # Strip remaining tags
     html = _TAG_RE.sub("", html)
+    # Restore underline placeholders
+    html = html.replace(_U_OPEN, "<u>").replace(_U_CLOSE, "</u>")
     # Decode HTML entities
     html = html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     return html.strip()
