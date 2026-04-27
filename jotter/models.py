@@ -174,47 +174,92 @@ class Database:
     # Notes
     # ------------------------------------------------------------------
 
-    def get_all_notes(self, search: str = "") -> list[Note]:
+    _SORT_COLUMNS = {
+        "modified": "modified_at DESC",
+        "created": "created_at DESC",
+        "title_asc": "LOWER(subject) ASC",
+        "title_desc": "LOWER(subject) DESC",
+    }
+
+    def get_all_notes(self, search: str = "", sort_by: str = "modified") -> list[Note]:
+        order = self._SORT_COLUMNS.get(sort_by, "modified_at DESC")
         conn = self._conn()
         if search:
             rows = conn.execute(
-                """
+                f"""
                 SELECT n.* FROM notes n
                 JOIN notes_fts f ON f.rowid = n.id
                 WHERE n.deleted = 0 AND notes_fts MATCH ?
-                ORDER BY n.modified_at DESC
+                ORDER BY {order}
                 """,
                 (search,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM notes WHERE deleted = 0 ORDER BY modified_at DESC"
+                f"SELECT * FROM notes WHERE deleted = 0 ORDER BY {order}"
             ).fetchall()
         return [_row_to_note(r) for r in rows]
 
-    def get_notes(self, folder_id: int, search: str = "") -> list[Note]:
+    def get_notes(self, folder_id: int, search: str = "", sort_by: str = "modified") -> list[Note]:
+        order = self._SORT_COLUMNS.get(sort_by, "modified_at DESC")
         conn = self._conn()
         if search:
             rows = conn.execute(
-                """
+                f"""
                 SELECT n.* FROM notes n
                 JOIN notes_fts f ON f.rowid = n.id
                 WHERE n.folder_id = ? AND n.deleted = 0
                   AND notes_fts MATCH ?
-                ORDER BY n.modified_at DESC
+                ORDER BY {order}
                 """,
                 (folder_id, search),
             ).fetchall()
         else:
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM notes
                 WHERE folder_id = ? AND deleted = 0
-                ORDER BY modified_at DESC
+                ORDER BY {order}
                 """,
                 (folder_id,),
             ).fetchall()
         return [_row_to_note(r) for r in rows]
+
+    def get_deleted_notes(self) -> list[Note]:
+        """Return all soft-deleted notes, newest first."""
+        rows = self._conn().execute(
+            "SELECT * FROM notes WHERE deleted = 1 ORDER BY modified_at DESC"
+        ).fetchall()
+        return [_row_to_note(r) for r in rows]
+
+    def restore_note(self, note_id: int) -> None:
+        """Un-delete a note and mark it dirty so it re-syncs."""
+        with self._lock:
+            conn = self._conn()
+            conn.execute(
+                "UPDATE notes SET deleted=0, synced_at=NULL, modified_at=? WHERE id=?",
+                (_now(), note_id),
+            )
+            conn.commit()
+
+    def purge_note(self, note_id: int) -> None:
+        """Permanently delete a note from the database."""
+        with self._lock:
+            conn = self._conn()
+            conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+            conn.commit()
+
+    def purge_old_deleted_notes(self, days: int = 30) -> int:
+        """Hard-delete notes that have been soft-deleted for more than *days* days."""
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self._lock:
+            conn = self._conn()
+            cursor = conn.execute(
+                "DELETE FROM notes WHERE deleted=1 AND modified_at < ?", (cutoff,)
+            )
+            conn.commit()
+        return cursor.rowcount
 
     def get_note(self, note_id: int) -> Optional[Note]:
         row = self._conn().execute(

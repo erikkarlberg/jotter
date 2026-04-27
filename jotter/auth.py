@@ -211,7 +211,8 @@ def get_credentials(client_secrets_path: str):
 def get_email(creds) -> Optional[str]:
     """Return the authenticated user's e-mail address via Google userinfo API."""
     try:
-        import urllib.request, urllib.error
+        import urllib.request
+        import urllib.error
         req = urllib.request.Request(
             "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
             headers={"Authorization": f"Bearer {creds.token}"},

@@ -34,11 +34,15 @@ class JotterApp(Adw.Application):
 
     def _on_activate(self, app: "JotterApp") -> None:
         from .audit_log import AuditLog
+        from .backup import start_auto_backup
         from .models import Database
         from .window import MainWindow
 
         self._db = Database(_DB_PATH)
         audit_log = AuditLog(_DB_PATH.parent / "audit.log")
+        start_auto_backup(_DB_PATH)
+        # Purge notes that have been in trash for more than 30 days
+        self._db.purge_old_deleted_notes(30)
         sync_engine, source = self._build_sync_engine(audit_log)
         self._sync_engine = sync_engine
 

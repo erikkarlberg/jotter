@@ -37,6 +37,7 @@ class SyncEventType(Enum):
     CONNECTED = auto()
     DISCONNECTED = auto()
     SYNC_CONFLICT = auto()   # data = number of conflicting notes skipped this cycle
+    SYNC_STARTED = auto()    # emitted just before each sync cycle begins
 
 
 @dataclass
@@ -167,6 +168,7 @@ class ImapSyncEngine(threading.Thread):
             self._idle_mode = None  # re-announce mode after each reconnect
 
             while not self._stop_event.is_set():
+                self._emit(SyncEventType.SYNC_STARTED)
                 self._run_folders(client, email_addr)
                 self._emit(SyncEventType.SYNC_COMPLETE)
 

@@ -1,0 +1,69 @@
+app-id: io.github.erikkarlberg.jotter
+runtime: org.gnome.Platform
+runtime-version: "47"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable  # not needed, listed for reference only
+
+command: jotter
+
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.gnome.OnlineAccounts
+  - --filesystem=host:ro  # needed only for file open/save dialogs
+  - --filesystem=xdg-data/jotter:create
+
+modules:
+  # ---- Python runtime ----
+  - name: python3-imapclient
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --find-links=. --prefix=${FLATPAK_DEST} imapclient
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/source/I/IMAPClient/imapclient-3.0.1.tar.gz
+        sha256: placeholder-update-sha256-before-release
+
+  - name: python3-google-auth
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --find-links=. --prefix=${FLATPAK_DEST} google-auth google-auth-oauthlib
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/source/g/google-auth/google_auth-2.38.0.tar.gz
+        sha256: placeholder-update-sha256-before-release
+      - type: file
+        url: https://files.pythonhosted.org/packages/source/g/google-auth-oauthlib/google_auth_oauthlib-1.2.1.tar.gz
+        sha256: placeholder-update-sha256-before-release
+
+  - name: python3-secretstorage
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-index --find-links=. --prefix=${FLATPAK_DEST} secretstorage jeepney
+    sources:
+      - type: file
+        url: https://files.pythonhosted.org/packages/source/S/SecretStorage/SecretStorage-3.3.3.tar.gz
+        sha256: placeholder-update-sha256-before-release
+      - type: file
+        url: https://files.pythonhosted.org/packages/source/j/jeepney/jeepney-0.8.0.tar.gz
+        sha256: placeholder-update-sha256-before-release
+
+  # ---- Jotter itself ----
+  - name: jotter
+    buildsystem: simple
+    build-commands:
+      - pip3 install --no-build-isolation --prefix=${FLATPAK_DEST} .
+      - install -Dm644 data/io.github.erikkarlberg.jotter.desktop
+          ${FLATPAK_DEST}/share/applications/io.github.erikkarlberg.jotter.desktop
+      - install -Dm644 data/io.github.erikkarlberg.jotter.metainfo.xml
+          ${FLATPAK_DEST}/share/metainfo/io.github.erikkarlberg.jotter.metainfo.xml
+      - install -Dm644 data/icons/io.github.erikkarlberg.jotter.svg
+          ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/io.github.erikkarlberg.jotter.svg
+    sources:
+      - type: dir
+        path: .
